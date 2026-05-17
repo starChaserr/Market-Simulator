@@ -25,7 +25,7 @@ def kill_all():
     time.sleep(2)
 
 def run_scenario(scenario):
-    print(f"\n>>> SCENARIO: {scenario}")
+    print(f"\n>>> SCENARIO START: {scenario}")
     kill_all()
     server = subprocess.Popen([sys.executable, "main.py", "--scenario", scenario], cwd=ROOT_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(30):
@@ -38,7 +38,6 @@ def run_scenario(scenario):
     for script, name, args in AGENTS:
         p = subprocess.Popen([sys.executable, str(AGENT_DIR / script), name] + args, cwd=ROOT_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         procs.append((p, name))
-        print(f"  Started {name}")
     
     finished = set(); start = time.time()
     while len(finished) < len(AGENTS) and (time.time() - start) < 600:
@@ -46,12 +45,13 @@ def run_scenario(scenario):
             if name in finished: continue
             acc = call_api(f"/account?user={name}")
             if acc and acc.get("orders", 0) >= 1000:
-                print(f"  {name} finished"); finished.add(name)
+                finished.add(name)
         time.sleep(2)
     
     results = {name: (call_api(f"/account?user={name}") or {}).get("profit_loss", 0) for _, name in procs}
     for p, _ in procs: p.kill()
     server.kill(); time.sleep(2)
+    print(f">>> SCENARIO END: {scenario} | Results: {results}")
     return results
 
 def main():
