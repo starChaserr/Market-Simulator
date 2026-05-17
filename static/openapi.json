@@ -1,0 +1,463 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Market Simulator API",
+    "version": "0.2.0",
+    "description": "Synthetic exchange sandbox for testing algo trading systems against a simulated limit order book."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8000"
+    }
+  ],
+  "paths": {
+    "/api/health": {
+      "get": {
+        "summary": "Health check",
+        "responses": {
+          "200": {
+            "description": "Server is alive"
+          }
+        }
+      }
+    },
+    "/api/state": {
+      "get": {
+        "summary": "Full market state snapshot",
+        "responses": {
+          "200": {
+            "description": "Market, order book, trades, accounts, orders, and events"
+          }
+        }
+      }
+    },
+    "/api/currency": {
+      "get": {
+        "summary": "Infer display currency from locale, timezone, headers, or explicit currency",
+        "parameters": [
+          {
+            "name": "locale",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "example": "en-IN"
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "example": "Asia/Kolkata"
+            }
+          },
+          {
+            "name": "currency",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "example": "INR"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resolved currency preference"
+          }
+        }
+      }
+    },
+    "/api/stream": {
+      "get": {
+        "summary": "Server-Sent Events stream of market state",
+        "responses": {
+          "200": {
+            "description": "SSE stream with event type state",
+            "content": {
+              "text/event-stream": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/orderbook": {
+      "get": {
+        "summary": "Aggregated order book depth",
+        "responses": {
+          "200": {
+            "description": "Bid and ask levels"
+          }
+        }
+      }
+    },
+    "/api/trades": {
+      "get": {
+        "summary": "Recent trade tape",
+        "responses": {
+          "200": {
+            "description": "Recent executions"
+          }
+        }
+      }
+    },
+    "/api/users": {
+      "get": {
+        "summary": "API user leaderboard",
+        "responses": {
+          "200": {
+            "description": "API users ranked by marked-to-market P/L"
+          }
+        }
+      }
+    },
+    "/api/accounts": {
+      "get": {
+        "summary": "List API accounts",
+        "responses": {
+          "200": {
+            "description": "API account summaries"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create or fetch an API account",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAccountRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Account summary"
+          }
+        }
+      }
+    },
+    "/api/accounts/fund": {
+      "post": {
+        "summary": "Add funds to an API account",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FundAccountRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Funded account summary"
+          }
+        }
+      }
+    },
+    "/api/account": {
+      "get": {
+        "summary": "Get one API account",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Account summary"
+          }
+        }
+      }
+    },
+    "/api/orders": {
+      "get": {
+        "summary": "List orders",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_internal",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Order summaries"
+          }
+        }
+      }
+    },
+    "/api/orders/{order_id}": {
+      "get": {
+        "summary": "Get an order by ID",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Order summary"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Cancel an order",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated order summary"
+          }
+        }
+      }
+    },
+    "/api/buy": {
+      "post": {
+        "summary": "Submit a buy order",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Order response"
+          }
+        }
+      }
+    },
+    "/api/sell": {
+      "post": {
+        "summary": "Submit a sell order",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Order response"
+          }
+        }
+      }
+    },
+    "/api/order": {
+      "post": {
+        "summary": "Submit a buy or sell order",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Order response"
+          }
+        }
+      }
+    },
+    "/api/cancel": {
+      "post": {
+        "summary": "Cancel an order",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["order_id"],
+                "properties": {
+                  "order_id": {
+                    "type": "string"
+                  },
+                  "user": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated order summary"
+          }
+        }
+      }
+    },
+    "/api/simulation": {
+      "post": {
+        "summary": "Pause or resume simulation",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["running"],
+                "properties": {
+                  "running": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Market state"
+          }
+        }
+      }
+    },
+    "/api/reset": {
+      "post": {
+        "summary": "Reset the market simulation",
+        "responses": {
+          "200": {
+            "description": "Market state"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CreateAccountRequest": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "type": "string"
+          },
+          "starting_cash": {
+            "type": "number",
+            "default": 1000000
+          }
+        }
+      },
+      "FundAccountRequest": {
+        "type": "object",
+        "required": ["user", "amount"],
+        "properties": {
+          "user": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        }
+      },
+      "OrderRequest": {
+        "type": "object",
+        "required": ["quantity"],
+        "properties": {
+          "side": {
+            "type": "string",
+            "enum": ["buy", "sell"],
+            "description": "Required for /api/order. Ignored by /api/buy and /api/sell."
+          },
+          "quantity": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "order_type": {
+            "type": "string",
+            "enum": ["market", "limit", "stop", "stop_limit"],
+            "default": "market"
+          },
+          "price": {
+            "type": "number",
+            "description": "Required for limit and stop_limit orders."
+          },
+          "stop_price": {
+            "type": "number",
+            "description": "Required for stop and stop_limit orders."
+          },
+          "time_in_force": {
+            "type": "string",
+            "enum": ["gtc", "ioc", "fok"],
+            "default": "gtc"
+          },
+          "post_only": {
+            "type": "boolean",
+            "default": false
+          },
+          "user": {
+            "type": "string",
+            "description": "API user/model name. Also accepts api_user, client_id, model, or X-API-User header."
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Market Simulator</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">SIM exchange</p>
+          <h1>Market Simulator</h1>
+        </div>
+        <div class="topbar-actions">
+          <div class="currency-control">
+            <label for="currencySelect">Currency</label>
+            <select id="currencySelect">
+              <option value="USD">USD</option>
+              <option value="INR">INR</option>
+              <option value="EUR">EUR</option>
+              <option value="GBP">GBP</option>
+              <option value="JPY">JPY</option>
+              <option value="AUD">AUD</option>
+              <option value="CAD">CAD</option>
+              <option value="SGD">SGD</option>
+              <option value="AED">AED</option>
+            </select>
+            <span id="currencySource">auto</span>
+          </div>
+          <button id="toggleRun" class="secondary-button" type="button">Pause</button>
+          <button id="reset" class="secondary-button warning" type="button">Reset</button>
+        </div>
+      </header>
+
+      <section class="metric-grid" aria-label="market metrics">
+        <div class="metric">
+          <span>Last</span>
+          <strong id="lastPrice">--</strong>
+        </div>
+        <div class="metric">
+          <span>Bid / Ask</span>
+          <strong id="bidAsk">--</strong>
+        </div>
+        <div class="metric">
+          <span>Spread</span>
+          <strong id="spread">--</strong>
+        </div>
+        <div class="metric">
+          <span>Volume</span>
+          <strong id="volume">--</strong>
+        </div>
+        <div class="metric">
+          <span>Volatility</span>
+          <strong id="volatility">--</strong>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <section class="panel chart-panel" aria-label="price chart">
+          <div class="panel-head">
+            <div>
+              <h2>Candles</h2>
+              <p id="chartSubhead">Waiting for ticks</p>
+            </div>
+            <div id="marketState" class="status-pill">Live</div>
+          </div>
+          <canvas id="priceCanvas" width="900" height="360"></canvas>
+        </section>
+
+        <section class="panel ticket-panel" aria-label="manual order ticket">
+          <div class="panel-head">
+            <h2>Order Ticket</h2>
+          </div>
+          <form id="orderForm" class="order-form">
+            <label>
+              User / Model
+              <input id="userName" type="text" value="Dashboard User" autocomplete="off">
+            </label>
+            <label>
+              Quantity
+              <input id="quantity" type="number" min="0.0001" step="1" value="500" required>
+            </label>
+            <label>
+              Type
+              <select id="orderType">
+                <option value="market">Market</option>
+                <option value="limit">Limit</option>
+              </select>
+            </label>
+            <label>
+              Limit Price <span id="priceCurrencyHint"></span>
+              <input id="price" type="number" min="0.0001" step="0.01" placeholder="optional" disabled>
+            </label>
+            <div class="funding-form">
+              <label>
+                Funds <span id="fundCurrencyHint"></span>
+                <input id="fundingAmount" type="number" min="0.01" step="1000" value="1000000">
+              </label>
+              <button id="fundButton" class="secondary-button" type="button">Fund User</button>
+            </div>
+            <div class="order-actions">
+              <button id="buyButton" class="buy-button" type="button">Buy</button>
+              <button id="sellButton" class="sell-button" type="button">Sell</button>
+            </div>
+          </form>
+          <div id="orderResult" class="order-result">No manual orders yet.</div>
+        </section>
+
+        <section class="panel book-panel" aria-label="order book">
+          <div class="panel-head">
+            <h2>Depth</h2>
+          </div>
+          <canvas id="bookCanvas" width="520" height="320"></canvas>
+        </section>
+
+        <section class="panel users-panel" aria-label="api user performance">
+          <div class="panel-head">
+            <div>
+              <h2>API Users</h2>
+              <p>Ranked by marked-to-market P/L</p>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Cash</th>
+                  <th>P/L</th>
+                  <th>Inventory</th>
+                  <th>Volume</th>
+                  <th>Orders</th>
+                  <th>Avg Px</th>
+                </tr>
+              </thead>
+              <tbody id="usersTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel agents-panel" aria-label="agent activity">
+          <div class="panel-head">
+            <div>
+              <h2>Agents</h2>
+              <p id="agentCounts">--</p>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Agent</th>
+                  <th>Type</th>
+                  <th>Action</th>
+                  <th>Inventory</th>
+                  <th>Volume</th>
+                  <th>P/L</th>
+                </tr>
+              </thead>
+              <tbody id="agentsTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel tape-panel" aria-label="trade tape">
+          <div class="panel-head">
+            <h2>Trade Tape</h2>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Side</th>
+                  <th>Price</th>
+                  <th>Qty</th>
+                  <th>Buyer</th>
+                  <th>Seller</th>
+                </tr>
+              </thead>
+              <tbody id="tradesTable"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
