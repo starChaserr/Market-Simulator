@@ -59,7 +59,7 @@ def trade_loop():
         best_bid = state.get("best_bid")
         best_ask = state.get("best_ask")
         if best_bid is None or best_ask is None:
-            time.sleep(0.5)
+            time.sleep(0.1)
             continue
         if target_bid >= best_ask: target_bid = best_bid
         if target_ask <= best_bid: target_ask = best_ask
@@ -75,6 +75,6 @@ def trade_loop():
             call_api("/order", "POST", {"side": "sell", "quantity": ORDER_SIZE, "order_type": "limit", "price": target_ask, "user": USER, "post_only": True})
             last_bid = target_bid; last_ask = target_ask
         
-        time.sleep(0.5)
+        time.sleep(0.1)
 
 if __name__ == "__main__": trade_loop()

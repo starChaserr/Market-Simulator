@@ -290,7 +290,7 @@ class MarketSimulator:
         self,
         symbol: str = "SIM",
         start_price: float = 100.0,
-        tick_interval: float = 0.25,
+        tick_interval: float = 0.05,
         *,
         scenario: str = "default",
         seed: int | None = None,
