@@ -14,6 +14,7 @@ The project runs a live single-symbol limit order book, internal market particip
 - API user accounts with starting capital, cash, inventory, realized P/L, unrealized P/L, fees, equity, and drawdown
 - Maker/taker fee simulation
 - Risk checks for max order size, max position, shorting, and buying power
+- Broker-style API rate limits with per-second and per-minute request buckets
 - Institutional, high-frequency market-making, random, and background-liquidity agents
 - Agent action tracking for buy, sell, buy/sell quoting, and hold states
 - Randomized internal agent counts and action intervals
@@ -21,6 +22,7 @@ The project runs a live single-symbol limit order book, internal market particip
 - Long-run stability guards for stale quotes, reference-price drift, and large-order latent liquidity
 - Deterministic runs with `--seed`
 - REST API, OpenAPI spec, and Server-Sent Events stream
+- Configurable broker-style chart refresh cadence, separate from order execution
 - Live dashboard with candlesticks, volume, order book depth, trade tape, API user P/L, and internal agent activity
 - Privacy-friendly display-currency auto-selection from browser locale/timezone
 
@@ -159,6 +161,17 @@ Live stream:
 curl -N http://127.0.0.1:8000/api/stream
 ```
 
+Get or set the broker-style chart refresh cadence:
+
+```bash
+curl -sS http://127.0.0.1:8000/api/chart-refresh
+curl -sS -X POST http://127.0.0.1:8000/api/chart-refresh \
+  -H 'Content-Type: application/json' \
+  -d '{"chart_refresh_ms":5000}'
+```
+
+Trading endpoints still accept orders whenever the API rate limits allow them; this setting only controls chart/history sampling and dashboard polling cadence.
+
 ## API User Names
 
 Orders can identify the strategy/model with any of these JSON fields:
@@ -178,6 +191,18 @@ Or headers:
 - `X-API-User`
 - `X-Client-Name`
 - `X-Model-Name`
+
+## API Rate Limits
+
+API routes return rate-limit headers:
+
+- `X-RateLimit-Limit-Second`
+- `X-RateLimit-Limit-Minute`
+- `X-RateLimit-Remaining-Second`
+- `X-RateLimit-Remaining-Minute`
+- `Retry-After` on `429 Too Many Requests`
+
+Requests are bucketed by API class plus user/model when a request includes `user`, `client_id`, `model`, or an equivalent header. Anonymous requests fall back to the client IP address. Market data, trading, account, and control endpoints use separate buckets so heavy chart/state polling does not block order submission or chart-refresh setting changes. Defaults are `25` requests per second and `900` requests per minute, configurable through JSON config keys `api_rate_limit_enabled`, `api_rate_limit_per_second`, and `api_rate_limit_per_minute`.
 
 ## Currency Display
 

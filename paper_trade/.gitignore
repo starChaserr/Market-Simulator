@@ -1,0 +1,6 @@
+.upstox_token
+*.token
+results/
+reports/
+supervisor_logs/
+supervisor_prompts/

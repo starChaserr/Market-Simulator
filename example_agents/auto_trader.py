@@ -1,4 +1,5 @@
 import urllib.request
+import urllib.parse
 import json
 import time
 import sys
@@ -20,6 +21,10 @@ def call_api(path, method="GET", data=None):
         with urllib.request.urlopen(req, data=body) as f: return json.loads(f.read().decode('utf-8'))
     except: return None
 
+def user_path(path):
+    separator = "&" if "?" in path else "?"
+    return f"{path}{separator}user={urllib.parse.quote(USER)}"
+
 def trade_loop():
     print(f"PASSIVE MAKER START: {USER}...")
     call_api("/accounts", "POST", {"user": USER, "starting_cash": STARTING_CASH})
@@ -27,15 +32,15 @@ def trade_loop():
     last_bid = 0; last_ask = 0
     
     while True:
-        state = call_api("/state")
-        account = call_api(f"/account?user={USER}")
+        state = call_api(user_path("/state"))
+        account = call_api(user_path("/account"))
         if not state or not account: time.sleep(1); continue
             
         equity = account.get("equity", 1000)
         orders_count = account.get("orders", 0)
         inv = account.get("inventory", 0)
         
-        if equity <= 0 or orders_count >= 1000:
+        if equity <= 0 :
             print(f"{USER} FINISHED. Equity: {equity}")
             sys.exit(0)
                 
@@ -59,22 +64,22 @@ def trade_loop():
         best_bid = state.get("best_bid")
         best_ask = state.get("best_ask")
         if best_bid is None or best_ask is None:
-            time.sleep(0.1)
+            time.sleep(0.5)
             continue
         if target_bid >= best_ask: target_bid = best_bid
         if target_ask <= best_bid: target_ask = best_ask
 
         if abs(target_bid - last_bid) > 0.01 or abs(target_ask - last_ask) > 0.01:
-            orders_resp = call_api(f"/orders?user={USER}")
+            orders_resp = call_api(user_path("/orders"))
             if orders_resp and "orders" in orders_resp:
                 for o in orders_resp["orders"]:
-                    if o["status"] == "open": call_api(f"/orders/{o['order_id']}?user={USER}", method="DELETE")
+                    if o["status"] == "open": call_api(user_path(f"/orders/{o['order_id']}"), method="DELETE")
             
             # Use post_only=True to guarantee maker status and lower fees
             call_api("/order", "POST", {"side": "buy", "quantity": ORDER_SIZE, "order_type": "limit", "price": target_bid, "user": USER, "post_only": True})
             call_api("/order", "POST", {"side": "sell", "quantity": ORDER_SIZE, "order_type": "limit", "price": target_ask, "user": USER, "post_only": True})
             last_bid = target_bid; last_ask = target_ask
         
-        time.sleep(0.1)
+        time.sleep(0.5)
 
 if __name__ == "__main__": trade_loop()

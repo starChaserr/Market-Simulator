@@ -29,6 +29,18 @@
             </select>
             <span id="currencySource">auto</span>
           </div>
+          <div class="refresh-control">
+            <label for="chartRefreshSelect">Chart</label>
+            <select id="chartRefreshSelect">
+              <option value="1000">1s</option>
+              <option value="2000">2s</option>
+              <option value="5000">5s</option>
+              <option value="15000">15s</option>
+              <option value="60000">1m</option>
+            </select>
+            <button id="chartRefreshApply" class="secondary-button refresh-apply" type="button">Apply</button>
+            <span id="chartRefreshStatus">broker feed</span>
+          </div>
           <button id="toggleRun" class="secondary-button" type="button">Pause</button>
           <button id="reset" class="secondary-button warning" type="button">Reset</button>
         </div>
@@ -186,6 +198,6 @@
       </section>
     </main>
 
-    <script src="/app.js"></script>
+    <script src="/app.js?v=chart-refresh-2"></script>
   </body>
 </html>

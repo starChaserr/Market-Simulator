@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Upstox Paper Desk</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="title-block">
+          <p class="eyebrow">Upstox paper bridge</p>
+          <h1>Paper Trade Desk</h1>
+          <div class="instrument-line">
+            <span id="symbolName">--</span>
+            <span id="instrumentKey">waiting for quote</span>
+          </div>
+        </div>
+        <div class="top-controls">
+          <div class="control-group">
+            <label for="refreshSelect">Feed refresh</label>
+            <select id="refreshSelect">
+              <option value="500">0.5s</option>
+              <option value="1000">1s</option>
+              <option value="2000">2s</option>
+              <option value="5000">5s</option>
+              <option value="15000">15s</option>
+            </select>
+            <button id="refreshApply" class="secondary-button compact" type="button">Apply</button>
+          </div>
+          <button id="resetButton" class="secondary-button danger" type="button">Reset Paper</button>
+          <div id="feedStatus" class="status-pill">Connecting</div>
+        </div>
+      </header>
+
+      <section class="metrics" aria-label="market metrics">
+        <div class="metric">
+          <span>Last</span>
+          <strong id="lastPrice">--</strong>
+        </div>
+        <div class="metric">
+          <span>Bid / Ask</span>
+          <strong id="bidAsk">--</strong>
+        </div>
+        <div class="metric">
+          <span>Spread</span>
+          <strong id="spread">--</strong>
+        </div>
+        <div class="metric">
+          <span>Volume</span>
+          <strong id="volume">--</strong>
+        </div>
+        <div class="metric">
+          <span>Quote Age</span>
+          <strong id="quoteAge">--</strong>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <section class="panel chart-panel" aria-label="live price chart">
+          <div class="panel-head">
+            <div>
+              <h2>Live Price</h2>
+              <p id="chartMeta">Waiting for Upstox market data</p>
+            </div>
+            <div class="range-line">
+              <span id="sessionLow">Low --</span>
+              <span id="sessionHigh">High --</span>
+            </div>
+          </div>
+          <canvas id="priceCanvas" width="900" height="360"></canvas>
+        </section>
+
+        <section class="panel ticket-panel" aria-label="paper order ticket">
+          <div class="panel-head">
+            <div>
+              <h2>Paper Order</h2>
+              <p>Local mock fills, live quote reference</p>
+            </div>
+          </div>
+          <form id="orderForm" class="order-form">
+            <label>
+              User / bot
+              <input id="userName" type="text" value="DashboardPaper" autocomplete="off">
+            </label>
+            <div class="form-grid">
+              <label>
+                Quantity
+                <input id="quantity" type="number" min="0.0001" step="1" value="10">
+              </label>
+              <label>
+                Price
+                <input id="price" type="number" min="0.0001" step="0.05" placeholder="market">
+              </label>
+            </div>
+            <div class="form-grid">
+              <label>
+                Type
+                <select id="orderType">
+                  <option value="market">Market</option>
+                  <option value="limit">Limit</option>
+                  <option value="stop">Stop</option>
+                  <option value="stop_limit">Stop limit</option>
+                </select>
+              </label>
+              <label>
+                TIF
+                <select id="timeInForce">
+                  <option value="gtc">GTC</option>
+                  <option value="ioc">IOC</option>
+                  <option value="fok">FOK</option>
+                </select>
+              </label>
+            </div>
+            <label id="stopPriceWrap" class="hidden">
+              Stop price
+              <input id="stopPrice" type="number" min="0.0001" step="0.05" placeholder="trigger">
+            </label>
+            <label class="check-line">
+              <input id="postOnly" type="checkbox">
+              <span>Post only</span>
+            </label>
+            <div class="side-actions">
+              <button id="buyButton" class="buy-button" type="button">Buy</button>
+              <button id="sellButton" class="sell-button" type="button">Sell</button>
+            </div>
+            <div class="fund-row">
+              <input id="fundAmount" type="number" min="1" step="1000" value="100000">
+              <button id="fundButton" class="secondary-button" type="button">Fund User</button>
+            </div>
+          </form>
+          <div id="orderResult" class="result-line">No manual paper orders yet.</div>
+        </section>
+
+        <section class="panel depth-panel" aria-label="market depth">
+          <div class="panel-head">
+            <div>
+              <h2>Depth</h2>
+              <p>Top live levels from quote snapshot</p>
+            </div>
+          </div>
+          <canvas id="depthCanvas" width="420" height="300"></canvas>
+        </section>
+
+        <section class="panel accounts-panel" aria-label="paper account ranking">
+          <div class="panel-head">
+            <div>
+              <h2>Paper Accounts</h2>
+              <p>Ranked by marked-to-market P/L</p>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>P/L</th>
+                  <th>Equity</th>
+                  <th>DD</th>
+                  <th>Inventory</th>
+                  <th>Orders</th>
+                  <th>Fills</th>
+                </tr>
+              </thead>
+              <tbody id="accountsBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel orders-panel" aria-label="open paper orders">
+          <div class="panel-head">
+            <div>
+              <h2>Open Orders</h2>
+              <p>Cancelable local paper orders</p>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Side</th>
+                  <th>User</th>
+                  <th>Qty</th>
+                  <th>Price</th>
+                  <th>Status</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="ordersBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel tape-panel" aria-label="paper trade tape">
+          <div class="panel-head">
+            <div>
+              <h2>Paper Tape</h2>
+              <p>Local fills generated from live quotes</p>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Side</th>
+                  <th>User</th>
+                  <th>Price</th>
+                  <th>Qty</th>
+                  <th>Time</th>
+                </tr>
+              </thead>
+              <tbody id="tradesBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel events-panel" aria-label="bridge events">
+          <div class="panel-head">
+            <div>
+              <h2>Bridge Events</h2>
+              <p>Quote refresh and paper broker messages</p>
+            </div>
+          </div>
+          <div id="eventsList" class="event-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
+

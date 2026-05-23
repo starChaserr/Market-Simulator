@@ -1,4 +1,5 @@
 import urllib.request
+import urllib.parse
 import json
 import time
 import sys
@@ -25,6 +26,10 @@ def call_api(path, method="GET", data=None):
     try:
         with urllib.request.urlopen(req, data=body) as f: return json.loads(f.read().decode('utf-8'))
     except: return None
+
+def user_path(path):
+    separator = "&" if "?" in path else "?"
+    return f"{path}{separator}user={urllib.parse.quote(USER)}"
 
 def get_llm_decision(llm, market_state, account_state):
     mid = market_state.get('mid_price', 0)
@@ -63,8 +68,8 @@ def main():
     last_bid = 0; last_ask = 0
     
     while True:
-        state = call_api("/state")
-        account = call_api(f"/account?user={USER}")
+        state = call_api(user_path("/state"))
+        account = call_api(user_path("/account"))
         if not state or not account: time.sleep(1); continue
         if account.get("orders", 0) >= 1000: sys.exit(0)
 
@@ -83,10 +88,10 @@ def main():
         if target_ask <= best_bid: target_ask = best_ask
 
         if abs(target_bid - last_bid) > 0.02 or abs(target_ask - last_ask) > 0.02 or account.get("orders") == 0:
-            orders_resp = call_api(f"/orders?user={USER}")
+            orders_resp = call_api(user_path("/orders"))
             if orders_resp and "orders" in orders_resp:
                 for o in orders_resp["orders"]:
-                    if o["status"] == "open": call_api(f"/orders/{o['order_id']}?user={USER}", method="DELETE")
+                    if o["status"] == "open": call_api(user_path(f"/orders/{o['order_id']}"), method="DELETE")
             
             call_api("/order", "POST", {"side": "buy", "quantity": ORDER_SIZE, "order_type": "limit", "price": target_bid, "user": USER})
             call_api("/order", "POST", {"side": "sell", "quantity": ORDER_SIZE, "order_type": "limit", "price": target_ask, "user": USER})

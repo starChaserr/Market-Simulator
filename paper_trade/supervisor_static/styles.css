@@ -1,0 +1,392 @@
+:root {
+  color-scheme: light;
+  --bg: #f4f6f8;
+  --panel: #ffffff;
+  --text: #17202a;
+  --muted: #667085;
+  --line: #d9e0e7;
+  --accent: #176b87;
+  --accent-2: #2f7d32;
+  --danger: #b42318;
+  --shadow: 0 10px 30px rgba(28, 43, 57, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.topbar {
+  align-items: center;
+  background: #ffffff;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  min-height: 84px;
+  padding: 18px clamp(18px, 4vw, 42px);
+}
+
+.eyebrow {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  margin: 0 0 3px;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+h3 {
+  letter-spacing: 0;
+  margin: 0;
+}
+
+h1 {
+  font-size: 28px;
+}
+
+h2 {
+  font-size: 20px;
+}
+
+h3 {
+  font-size: 15px;
+  margin: 24px 0 10px;
+}
+
+main {
+  padding: 22px clamp(18px, 4vw, 42px) 42px;
+}
+
+.status-pill {
+  background: #eef6f8;
+  border: 1px solid #c8e3ea;
+  border-radius: 999px;
+  color: var(--accent);
+  font-weight: 700;
+  min-width: 142px;
+  padding: 9px 14px;
+  text-align: center;
+}
+
+.status-pill.error {
+  background: #fff1f0;
+  border-color: #f4b3ad;
+  color: var(--danger);
+}
+
+.status-band {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 1px;
+  grid-template-columns: 2fr repeat(3, 1fr);
+  margin-bottom: 18px;
+}
+
+.status-band > div {
+  border-right: 1px solid var(--line);
+  min-width: 0;
+  padding: 16px;
+}
+
+.status-band > div:last-child {
+  border-right: 0;
+}
+
+.label {
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.status-band strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.live-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  margin-bottom: 18px;
+  padding-bottom: 16px;
+}
+
+.live-head {
+  border-bottom: 1px solid var(--line);
+}
+
+.live-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.live-state {
+  background: #f2f4f7;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  min-width: 108px;
+  padding: 7px 10px;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.live-state.connected {
+  background: #edf7ed;
+  border-color: #b8dfba;
+  color: var(--accent-2);
+}
+
+.live-state.error,
+.live-state.disconnected {
+  background: #fff1f0;
+  border-color: #f4b3ad;
+  color: var(--danger);
+}
+
+.live-strip {
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 1px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.live-strip > div {
+  border-right: 1px solid var(--line);
+  min-width: 0;
+  padding: 13px 16px;
+}
+
+.live-strip > div:last-child {
+  border-right: 0;
+}
+
+.live-strip strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.live-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr);
+}
+
+.live-panel h3 {
+  margin-left: 16px;
+  margin-right: 16px;
+}
+
+.live-table-wrap table {
+  min-width: 560px;
+}
+
+.live-grid .live-table-wrap:first-of-type table {
+  min-width: 920px;
+}
+
+.layout {
+  align-items: start;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+}
+
+.reports-panel,
+.main-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+
+.panel-head {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  padding: 16px;
+}
+
+button {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  min-height: 34px;
+  padding: 7px 12px;
+}
+
+button:hover,
+button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tabs {
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.tab {
+  border: 0;
+  border-right: 1px solid var(--line);
+}
+
+.tab:last-child {
+  border-right: 0;
+}
+
+.reports-list {
+  max-height: calc(100vh - 270px);
+  overflow: auto;
+}
+
+.report-row {
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  padding: 12px 16px;
+}
+
+.report-row:hover,
+.report-row.active {
+  background: #f3f8fa;
+}
+
+.report-row strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.report-row span {
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  margin-top: 3px;
+}
+
+.main-panel {
+  min-width: 0;
+  padding-bottom: 18px;
+}
+
+.symbols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  max-width: 480px;
+}
+
+.symbols span {
+  background: #eef2f6;
+  border: 1px solid var(--line);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 7px;
+}
+
+.metrics {
+  display: grid;
+  gap: 1px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.metric {
+  border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  padding: 16px;
+}
+
+.metric:last-child {
+  border-right: 0;
+}
+
+.metric strong {
+  display: block;
+  font-size: 22px;
+  margin-top: 4px;
+}
+
+.table-wrap {
+  margin: 0 16px;
+  overflow: auto;
+}
+
+table {
+  border-collapse: collapse;
+  min-width: 720px;
+  width: 100%;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--line);
+  padding: 9px 8px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+th:first-child,
+td:first-child,
+th:nth-child(3),
+td:nth-child(3) {
+  text-align: left;
+}
+
+th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.positive {
+  color: var(--accent-2);
+}
+
+.negative {
+  color: var(--danger);
+}
+
+.empty {
+  color: var(--muted);
+  padding: 18px 16px;
+}
+
+@media (max-width: 900px) {
+  .status-band,
+  .layout,
+  .metrics,
+  .live-strip,
+  .live-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .status-band > div,
+  .metric,
+  .live-strip > div {
+    border-right: 0;
+  }
+
+  .reports-list {
+    max-height: 320px;
+  }
+}

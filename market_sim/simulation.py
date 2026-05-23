@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 import threading
 import time
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -286,11 +287,14 @@ class RandomTrader(BaseAgent):
 
 
 class MarketSimulator:
+    MIN_CHART_REFRESH_INTERVAL = 0.25
+    MAX_CHART_REFRESH_INTERVAL = 60.0
+
     def __init__(
         self,
         symbol: str = "SIM",
         start_price: float = 100.0,
-        tick_interval: float = 0.05,
+        tick_interval: float = 0.25,
         *,
         scenario: str = "default",
         seed: int | None = None,
@@ -302,6 +306,9 @@ class MarketSimulator:
         self.config = build_config(scenario=scenario, config_path=config_path)
         self.engine = MatchingEngine(symbol=symbol, start_price=start_price, config=self.config)
         self.tick_interval = tick_interval
+        self.chart_refresh_interval = self._normalize_chart_refresh_interval(self.config.get("chart_refresh_interval", 1.0))
+        self.config["chart_refresh_interval"] = self.chart_refresh_interval
+        self._last_chart_recorded_at = time.monotonic()
         self.interval_jitter = 0.45
         self.last_loop_sleep = tick_interval
         self.running = True
@@ -433,12 +440,23 @@ class MarketSimulator:
             self.running = bool(running)
             return self.snapshot()
 
+    def chart_refresh_settings(self) -> dict[str, Any]:
+        with self.lock:
+            return self._chart_refresh_payload()
+
+    def set_chart_refresh_interval(self, interval: float) -> dict[str, Any]:
+        with self.lock:
+            self.chart_refresh_interval = self._normalize_chart_refresh_interval(interval)
+            self.config["chart_refresh_interval"] = self.chart_refresh_interval
+            return self._chart_refresh_payload()
+
     def reset(self) -> dict[str, Any]:
         with self.lock:
             if self.seed is not None:
                 random.seed(self.seed)
             self.engine.reset()
             self.started_at = time.time()
+            self._last_chart_recorded_at = time.monotonic()
             self.agents = self._create_agents()
             for agent in self.agents:
                 agent.attach(self.engine)
@@ -460,6 +478,8 @@ class MarketSimulator:
                 {
                     "running": self.running,
                     "tick_interval": self.tick_interval,
+                    "chart_refresh_interval": self.chart_refresh_interval,
+                    "chart_refresh_ms": int(self.chart_refresh_interval * 1000),
                     "last_loop_sleep": round(self.last_loop_sleep, 4),
                     "uptime_seconds": round(time.time() - self.started_at, 2),
                     "agent_counts": counts,
@@ -505,7 +525,28 @@ class MarketSimulator:
                     account.extra["last_error"] = str(exc)
             finally:
                 agent.schedule_next(self.engine.tick)
-        self.engine.record_history()
+        self._record_chart_history_if_due()
+
+    def _record_chart_history_if_due(self) -> None:
+        now = time.monotonic()
+        if now - self._last_chart_recorded_at >= self.chart_refresh_interval:
+            self.engine.record_history()
+            self._last_chart_recorded_at = now
+
+    def _chart_refresh_payload(self) -> dict[str, Any]:
+        return {
+            "chart_refresh_interval": self.chart_refresh_interval,
+            "chart_refresh_ms": int(self.chart_refresh_interval * 1000),
+            "min_chart_refresh_interval": self.MIN_CHART_REFRESH_INTERVAL,
+            "max_chart_refresh_interval": self.MAX_CHART_REFRESH_INTERVAL,
+            "tick_interval": self.tick_interval,
+        }
+
+    def _normalize_chart_refresh_interval(self, interval: float) -> float:
+        value = float(interval)
+        if not math.isfinite(value):
+            raise ValueError("chart_refresh_interval must be a finite number")
+        return round(max(self.MIN_CHART_REFRESH_INTERVAL, min(value, self.MAX_CHART_REFRESH_INTERVAL)), 3)
 
     def _create_agents(self) -> list[BaseAgent]:
         agents: list[BaseAgent] = []

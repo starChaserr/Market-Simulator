@@ -5,7 +5,9 @@ import json
 import mimetypes
 import signal
 import sys
+import threading
 import time
+from collections import defaultdict, deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,6 +22,67 @@ ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
 #Entry point
 
+
+class ApiRateLimiter:
+    def __init__(self, *, enabled: bool, per_second: int, per_minute: int) -> None:
+        self.enabled = enabled
+        self.per_second = max(0, int(per_second))
+        self.per_minute = max(0, int(per_minute))
+        self._events: defaultdict[str, deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> "ApiRateLimiter":
+        return cls(
+            enabled=bool(config.get("api_rate_limit_enabled", True)),
+            per_second=int(config.get("api_rate_limit_per_second", 25)),
+            per_minute=int(config.get("api_rate_limit_per_minute", 900)),
+        )
+
+    def check(self, key: str, now: float | None = None) -> dict[str, Any]:
+        if not self.enabled or (self.per_second <= 0 and self.per_minute <= 0):
+            return self._result(True, 0.0, self.per_second, self.per_minute)
+
+        current = time.time() if now is None else now
+        with self._lock:
+            events = self._events[key]
+            while events and current - events[0] >= 60:
+                events.popleft()
+
+            second_events = [event for event in events if current - event < 1]
+            second_count = len(second_events)
+            minute_count = len(events)
+            retry_after = 0.0
+            allowed = True
+
+            if self.per_second > 0 and second_count >= self.per_second:
+                retry_after = max(retry_after, 1 - (current - second_events[0]))
+                allowed = False
+            if self.per_minute > 0 and minute_count >= self.per_minute:
+                retry_after = max(retry_after, 60 - (current - events[0]))
+                allowed = False
+
+            if allowed:
+                events.append(current)
+                second_count += 1
+                minute_count += 1
+
+            remaining_second = max(0, self.per_second - second_count) if self.per_second > 0 else 0
+            remaining_minute = max(0, self.per_minute - minute_count) if self.per_minute > 0 else 0
+            return self._result(allowed, retry_after, remaining_second, remaining_minute)
+
+    def _result(self, allowed: bool, retry_after: float, remaining_second: int, remaining_minute: int) -> dict[str, Any]:
+        return {
+            "allowed": allowed,
+            "retry_after": max(0.0, retry_after),
+            "headers": {
+                "X-RateLimit-Limit-Second": str(self.per_second),
+                "X-RateLimit-Limit-Minute": str(self.per_minute),
+                "X-RateLimit-Remaining-Second": str(remaining_second),
+                "X-RateLimit-Remaining-Minute": str(remaining_minute),
+            },
+        }
+
 class MarketHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 128
@@ -28,6 +91,7 @@ class MarketHTTPServer(ThreadingHTTPServer):
 
 class MarketRequestHandler(BaseHTTPRequestHandler):
     simulator: MarketSimulator
+    rate_limiter: ApiRateLimiter
 
     server_version = "MarketSimulator/1.0"
 
@@ -41,6 +105,8 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
         query = parse_qs(parsed.query)
         try:
+            if not self._check_api_rate_limit(path, query=query):
+                return
             if path == "/api/health":
                 self._send_json({"ok": True})
                 return
@@ -56,6 +122,9 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
                         accept_language=self.headers.get("Accept-Language"),
                     )
                 )
+                return
+            if path == "/api/chart-refresh":
+                self._send_json(self.simulator.chart_refresh_settings())
                 return
             if path == "/api/state":
                 self._send_json(self.simulator.snapshot())
@@ -119,6 +188,8 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             payload = self._read_json()
+            if not self._check_api_rate_limit(path, payload=payload):
+                return
             if path == "/api/buy":
                 result = self.simulator.buy(
                     self._quantity(payload),
@@ -175,6 +246,16 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
                     raise ValueError("payload must include a running boolean")
                 self._send_json(self.simulator.set_running(bool(payload["running"])))
                 return
+            if path == "/api/chart-refresh":
+                interval = self._optional_float(payload.get("chart_refresh_interval", payload.get("interval")))
+                if interval is None:
+                    refresh_ms = self._optional_float(payload.get("chart_refresh_ms", payload.get("milliseconds")))
+                    if refresh_ms is not None:
+                        interval = refresh_ms / 1000
+                if interval is None:
+                    raise ValueError("payload must include chart_refresh_interval or chart_refresh_ms")
+                self._send_json(self.simulator.set_chart_refresh_interval(interval))
+                return
             if path == "/api/reset":
                 self._send_json(self.simulator.reset())
                 return
@@ -189,6 +270,8 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
         query = parse_qs(parsed.query)
         try:
+            if not self._check_api_rate_limit(path, query=query):
+                return
             if path == "/api/users":
                 self._send_json(self.simulator.clear_api_users())
                 return
@@ -218,6 +301,73 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: Any) -> None:
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
+
+    def _check_api_rate_limit(
+        self,
+        path: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        query: dict[str, list[str]] | None = None,
+    ) -> bool:
+        if not path.startswith("/api/"):
+            self._rate_limit_headers = {}
+            return True
+
+        scope = self._rate_limit_scope(path)
+        principal = self._rate_limit_principal(payload=payload, query=query)
+        key = f"{scope}:{principal}"
+        result = self.rate_limiter.check(key)
+        self._rate_limit_headers = dict(result["headers"])
+        if result["allowed"]:
+            return True
+
+        retry_after = float(result["retry_after"])
+        retry_after_header = max(1, int(retry_after + 0.999))
+        self._rate_limit_headers["Retry-After"] = str(retry_after_header)
+        self._send_json(
+            {
+                "error": "rate limit exceeded",
+                "status": HTTPStatus.TOO_MANY_REQUESTS.value,
+                "bucket": key,
+                "principal": principal,
+                "scope": scope,
+                "limit_per_second": self.rate_limiter.per_second,
+                "limit_per_minute": self.rate_limiter.per_minute,
+                "retry_after": round(retry_after, 3),
+            },
+            status=HTTPStatus.TOO_MANY_REQUESTS,
+        )
+        return False
+
+    def _rate_limit_scope(self, path: str) -> str:
+        if path in {"/api/state", "/api/stream", "/api/orderbook", "/api/trades", "/api/users", "/api/agents"}:
+            return "data"
+        if path in {"/api/buy", "/api/sell", "/api/order", "/api/cancel"} or path.startswith("/api/orders/"):
+            return "trading"
+        if path in {"/api/chart-refresh", "/api/simulation", "/api/reset"}:
+            return "control"
+        if path in {"/api/accounts", "/api/accounts/fund", "/api/account", "/api/config", "/api/currency", "/api/health"}:
+            return "account"
+        return "api"
+
+    def _rate_limit_principal(self, *, payload: dict[str, Any] | None, query: dict[str, list[str]] | None) -> str:
+        user = None
+        if payload is not None:
+            user = self._request_user(payload)
+        if user is None and query is not None:
+            for key in ("user", "user_name", "username", "api_user", "client", "client_id", "model", "owner", "name"):
+                user = self._query_one(query, key)
+                if user:
+                    break
+        if user is None:
+            for header in ("X-API-User", "X-Client-Name", "X-Model-Name"):
+                value = self.headers.get(header)
+                if value:
+                    user = value
+                    break
+        if user:
+            return f"user:{str(user).strip()}"
+        return f"client:{self.client_address[0]}"
 
     def _serve_static(self, path: str) -> None:
         if path == "/":
@@ -267,6 +417,7 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Connection", "keep-alive")
         self.send_header("Access-Control-Allow-Origin", "*")
+        self._send_rate_limit_headers()
         self.end_headers()
         last_seq = 0
         while True:
@@ -350,6 +501,12 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-User, X-Client-Name, X-Model-Name, X-Client-Locale, X-Client-Timezone, X-Currency")
+        self.send_header("Access-Control-Expose-Headers", "Retry-After, X-RateLimit-Limit-Second, X-RateLimit-Limit-Minute, X-RateLimit-Remaining-Second, X-RateLimit-Remaining-Minute")
+        self._send_rate_limit_headers()
+
+    def _send_rate_limit_headers(self) -> None:
+        for key, value in getattr(self, "_rate_limit_headers", {}).items():
+            self.send_header(key, value)
 
     @staticmethod
     def _quantity(payload: dict[str, Any]) -> float:
@@ -411,6 +568,7 @@ def main() -> int:
         config_path=args.config,
     )
     MarketRequestHandler.simulator = simulator
+    MarketRequestHandler.rate_limiter = ApiRateLimiter.from_config(simulator.config)
     server = MarketHTTPServer((args.host, args.port), MarketRequestHandler)
 
     def shutdown(_signum: int, _frame: Any) -> None:

@@ -5,12 +5,12 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent.parent
 AGENT_DIR = Path(__file__).resolve().parent
 API_URL = "http://127.0.0.1:8000/api"
-RESULT_FILE = AGENT_DIR / "test_result.md"
+RESULT_FILE = AGENT_DIR / "market_suitability_test.md"
 SCENARIOS = ["calm", "high_volatility", "trending_up", "trending_down", "flash_crash", "liquidity_drought", "mean_reverting", "news_shock"]
 AGENTS = [
-    ("raider_core.py", "RaiderCore", ["--model-path", "/tmp/non_existent"]),
+    ("raider_core.py", "RaiderCore_v3.1", ["--model-path", str(ROOT_DIR / "llama-3-8b-instruct.gguf")]),
     ("adaptive_edge_maker.py", "AdaptiveEdgeMaker", []),
-    ("auto_trader.py", "AutoTrader", []),
+    ("apex_maker_v2.py", "ApexMaker_v2", []),
 ]
 
 def call_api(path):
@@ -44,11 +44,16 @@ def run_scenario(scenario):
         for p, name in procs:
             if name in finished: continue
             acc = call_api(f"/account?user={name}")
-            if acc and acc.get("orders", 0) >= 1000:
+            if acc and acc.get("orders", 0) >= 500:
                 finished.add(name)
         time.sleep(2)
     
-    results = {name: (call_api(f"/account?user={name}") or {}).get("profit_loss", 0) for _, name in procs}
+    results = {
+        name: {
+            "pnl": (call_api(f"/account?user={name}") or {}).get("profit_loss", 0),
+            "dd": (call_api(f"/account?user={name}") or {}).get("max_drawdown", 0)
+        } for _, name in procs
+    }
     for p, _ in procs: p.kill()
     server.kill(); time.sleep(2)
     print(f">>> SCENARIO END: {scenario} | Results: {results}")
@@ -56,19 +61,21 @@ def run_scenario(scenario):
 
 def main():
     with open(RESULT_FILE, "w") as f:
-        f.write("# Market Simulation Test Results\n\nRun Date: " + time.strftime('%Y-%m-%d %H:%M:%S') + "\nStarting Cash: 10,000\nOrder Limit: 1,000\n\n")
+        f.write("# Market Suitability Test Results\n\nRun Date: " + time.strftime('%Y-%m-%d %H:%M:%S') + "\nStarting Cash: 10,000\nOrder Limit: 500\n\n")
     all_res = {}
     for s in SCENARIOS:
         res = run_scenario(s)
         all_res[s] = res
         with open(RESULT_FILE, "a") as f:
-            f.write(f"## Scenario: {s}\n\n| Agent | P/L |\n| :--- | :--- |\n")
-            for n, p in res.items(): f.write(f"| {n} | {p:.2f} |\n")
-            if res: f.write(f"\n**WINNER: {max(res, key=res.get)}**\n\n")
+            f.write(f"## Scenario: {s}\n\n| Agent | P/L | Max Drawdown |\n| :--- | :--- | :--- |\n")
+            for n, d in res.items(): f.write(f"| {n} | {d['pnl']:.2f} | {d['dd']:.2f} |\n")
+            if res: f.write(f"\n**WINNER (Profit): {max(res, key=lambda x: res[x]['pnl'])}**\n\n")
     with open(RESULT_FILE, "a") as f:
         f.write("## Final Summary\n\n| Scenario | Winner | P/L |\n| :--- | :--- | :--- |\n")
         for s, r in all_res.items():
-            if r: w = max(r, key=r.get); f.write(f"| {s} | {w} | {r[w]:.2f} |\n")
+            if r: 
+                w = max(r, key=lambda x: r[x]['pnl'])
+                f.write(f"| {s} | {w} | {r[w]['pnl']:.2f} |\n")
     print(f"Done: {RESULT_FILE}")
 
 if __name__ == '__main__': main()

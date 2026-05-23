@@ -67,6 +67,34 @@
         }
       }
     },
+    "/api/chart-refresh": {
+      "get": {
+        "summary": "Get chart market-data refresh cadence",
+        "responses": {
+          "200": {
+            "description": "Chart refresh settings"
+          }
+        }
+      },
+      "post": {
+        "summary": "Set chart market-data refresh cadence",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChartRefreshRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Chart refresh settings"
+          }
+        }
+      }
+    },
     "/api/stream": {
       "get": {
         "summary": "Server-Sent Events stream of market state",
@@ -414,6 +442,19 @@
           "amount": {
             "type": "number",
             "exclusiveMinimum": 0
+          }
+        }
+      },
+      "ChartRefreshRequest": {
+        "type": "object",
+        "properties": {
+          "chart_refresh_interval": {
+            "type": "number",
+            "description": "Chart refresh interval in seconds."
+          },
+          "chart_refresh_ms": {
+            "type": "number",
+            "description": "Chart refresh interval in milliseconds."
           }
         }
       },

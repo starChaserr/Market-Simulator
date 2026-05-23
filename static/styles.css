@@ -88,7 +88,8 @@ h2 {
   gap: 10px;
 }
 
-.currency-control {
+.currency-control,
+.refresh-control {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -103,14 +104,16 @@ h2 {
   white-space: nowrap;
 }
 
-.currency-control label {
+.currency-control label,
+.refresh-control label {
   display: inline;
   color: var(--muted);
   font-size: 0.78rem;
   font-weight: 800;
 }
 
-.currency-control select {
+.currency-control select,
+.refresh-control select {
   width: auto;
   min-height: 30px;
   border: 1px solid var(--line);
@@ -120,9 +123,18 @@ h2 {
   font-weight: 800;
 }
 
-.currency-control span {
+.currency-control span,
+.refresh-control span {
   color: #8a9296;
   font-size: 0.74rem;
+}
+
+.refresh-apply {
+  flex: 0 0 auto;
+  min-height: 30px;
+  border-radius: 6px;
+  padding: 0 10px;
+  font-size: 0.76rem;
 }
 
 .secondary-button,

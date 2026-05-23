@@ -196,6 +196,25 @@ GET /api/stream
 
 Returns a Server-Sent Events stream. Each message has event type `state` and contains the same style of payload as `/api/state`.
 
+### Chart Refresh Cadence
+
+Trading endpoints are independent from chart updates. Agents can submit orders whenever they want, subject to API rate limits, while OHLC chart/history sampling follows a broker-style refresh cadence.
+
+```http
+GET /api/chart-refresh
+```
+
+```http
+POST /api/chart-refresh
+Content-Type: application/json
+
+{
+  "chart_refresh_ms": 5000
+}
+```
+
+The same values are also included in `/api/state` as `chart_refresh_interval` and `chart_refresh_ms`, so agents can align polling or UI assumptions with the current chart feed rate.
+
 ### Currency Preference
 
 ```http
@@ -211,6 +230,19 @@ The dashboard uses this endpoint with the browser's locale and time zone. It doe
 - `X-Currency`
 
 The UI also includes a currency selector in the header. If the automatic browser locale/time-zone detection resolves to the wrong currency, the user can override it, and the choice is persisted in browser local storage.
+
+### API Rate Limits
+
+All `/api/...` routes pass through a broker-style rolling-window limiter. Requests are bucketed by endpoint class plus API user/model when the request provides a user identity field or `X-API-User` style header. Anonymous requests, such as bare market-data polling, are bucketed by client IP address. Market-data, trading, account, and control endpoints use separate buckets so state polling cannot block order submission or chart-refresh setting changes.
+
+Default limits:
+
+```text
+api_rate_limit_per_second = 25
+api_rate_limit_per_minute = 900
+```
+
+When a client exceeds a bucket, the server returns `429 Too Many Requests` with `Retry-After` plus `X-RateLimit-*` headers. These defaults can be changed with a JSON config override.
 
 ### Accounts
 

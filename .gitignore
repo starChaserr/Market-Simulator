@@ -9,4 +9,3 @@ dist/
 build/
 *.egg-info/
 *.gguf
-example_agents/

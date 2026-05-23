@@ -8,6 +8,9 @@ const els = {
   marketState: document.querySelector("#marketState"),
   currencySelect: document.querySelector("#currencySelect"),
   currencySource: document.querySelector("#currencySource"),
+  chartRefreshSelect: document.querySelector("#chartRefreshSelect"),
+  chartRefreshApply: document.querySelector("#chartRefreshApply"),
+  chartRefreshStatus: document.querySelector("#chartRefreshStatus"),
   priceCanvas: document.querySelector("#priceCanvas"),
   bookCanvas: document.querySelector("#bookCanvas"),
   userName: document.querySelector("#userName"),
@@ -31,10 +34,14 @@ const els = {
 
 let currentState = null;
 let refreshTimer = null;
+let currentRefreshMs = 1000;
+let chartRefreshSaveTimer = null;
+let chartRefreshSaveToken = 0;
 let displayLocale = navigator.language || "en-US";
 let displayCurrency = "USD";
 const currencyStorageKey = "market-simulator-display-currency";
 const currencyModeStorageKey = "market-simulator-display-currency-mode";
+const dashboardHeaders = { "X-API-User": "Dashboard UI" };
 
 async function loadCurrencyPreference() {
   const savedCurrency = localStorage.getItem(currencyStorageKey);
@@ -44,7 +51,7 @@ async function loadCurrencyPreference() {
 
   try {
     const params = new URLSearchParams({ locale, timezone });
-    const response = await fetch(`/api/currency?${params.toString()}`, { cache: "no-store" });
+    const response = await fetch(`/api/currency?${params.toString()}`, { cache: "no-store", headers: dashboardHeaders });
     if (!response.ok) throw new Error(`Currency request failed: ${response.status}`);
     const preference = await response.json();
     if (savedCurrency && savedMode === "manual") {
@@ -96,6 +103,25 @@ function setCurrency(currency, locale, source) {
   els.priceCurrencyHint.textContent = `(${displayCurrency})`;
   els.fundCurrencyHint.textContent = `(${displayCurrency})`;
   if (currentState) render(currentState);
+}
+
+function setRefreshCadence(refreshMs, source = "broker feed") {
+  const nextMs = Math.max(250, Math.min(Number(refreshMs) || 1000, 60000));
+  currentRefreshMs = nextMs;
+  ensureChartRefreshOption(nextMs);
+  els.chartRefreshSelect.value = String(nextMs);
+  els.chartRefreshStatus.textContent = source;
+  if (refreshTimer) window.clearInterval(refreshTimer);
+  refreshTimer = window.setInterval(refresh, currentRefreshMs);
+}
+
+function ensureChartRefreshOption(refreshMs) {
+  const value = String(refreshMs);
+  if ([...els.chartRefreshSelect.options].some((option) => option.value === value)) return;
+  const option = document.createElement("option");
+  option.value = value;
+  option.textContent = refreshMs >= 60000 ? `${money(refreshMs / 60000, 1)}m` : `${money(refreshMs / 1000, 2)}s`;
+  els.chartRefreshSelect.appendChild(option);
 }
 
 function ensureCurrencyOption(currency) {
@@ -156,9 +182,32 @@ function resizeCanvas(canvas) {
 }
 
 async function fetchState() {
-  const response = await fetch("/api/state", { cache: "no-store" });
+  const response = await fetch("/api/state", { cache: "no-store", headers: dashboardHeaders });
   if (!response.ok) throw new Error(`State request failed: ${response.status}`);
   return response.json();
+}
+
+async function loadChartRefreshPreference() {
+  try {
+    const response = await fetch("/api/chart-refresh", { cache: "no-store", headers: dashboardHeaders });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 404) {
+        els.chartRefreshStatus.textContent = "local";
+        return;
+      }
+      const retryAfter = response.headers.get("Retry-After");
+      const suffix = retryAfter ? ` Retry after ${retryAfter}s.` : "";
+      throw new Error(`${result.error || `Chart refresh request failed (${response.status})`}.${suffix}`);
+    }
+    const confirmedMs = Number(result.chart_refresh_ms);
+    if (Number.isFinite(confirmedMs) && confirmedMs > 0) {
+      setRefreshCadence(confirmedMs, "broker feed");
+    }
+  } catch (error) {
+    els.chartRefreshStatus.textContent = "default";
+    els.orderResult.textContent = error.message;
+  }
 }
 
 async function refresh() {
@@ -173,12 +222,15 @@ async function refresh() {
 }
 
 function render(state) {
+  if (state.chart_refresh_ms && Number(state.chart_refresh_ms) !== currentRefreshMs) {
+    setRefreshCadence(Number(state.chart_refresh_ms));
+  }
   els.lastPrice.textContent = formatCurrency(state.last_price, 2);
   els.bidAsk.textContent = `${formatCurrency(state.best_bid, 2)} / ${formatCurrency(state.best_ask, 2)}`;
   els.spread.textContent = formatCurrency(state.spread, 4);
   els.volume.textContent = compact(state.total_volume);
   els.volatility.textContent = `${money(state.volatility * 100, 2)}%`;
-  els.chartSubhead.textContent = `${state.symbol} tick ${state.tick} | high ${formatCurrency(state.session_high, 2)} | low ${formatCurrency(state.session_low, 2)}`;
+  els.chartSubhead.textContent = `${state.symbol} tick ${state.tick} | chart ${money((state.chart_refresh_ms || currentRefreshMs) / 1000, 2)}s | high ${formatCurrency(state.session_high, 2)} | low ${formatCurrency(state.session_low, 2)}`;
   els.marketState.textContent = state.running ? "Live" : "Paused";
   els.marketState.classList.toggle("paused", !state.running);
   els.toggleRun.textContent = state.running ? "Pause" : "Resume";
@@ -609,7 +661,7 @@ async function fundUser() {
 async function setRunning(nextRunning) {
   await fetch("/api/simulation", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...dashboardHeaders },
     body: JSON.stringify({ running: nextRunning }),
   });
   await refresh();
@@ -617,9 +669,63 @@ async function setRunning(nextRunning) {
 
 async function resetSimulation() {
   els.orderResult.textContent = "Resetting...";
-  await fetch("/api/reset", { method: "POST" });
+  await fetch("/api/reset", { method: "POST", headers: dashboardHeaders });
   els.orderResult.textContent = "Simulation reset.";
   await refresh();
+}
+
+async function setChartRefresh() {
+  const chartRefreshMs = Number(els.chartRefreshSelect.value);
+  const previousMs = currentRefreshMs;
+  const saveToken = ++chartRefreshSaveToken;
+  if (!Number.isFinite(chartRefreshMs) || chartRefreshMs <= 0) {
+    els.orderResult.textContent = "Chart refresh must be positive.";
+    els.chartRefreshSelect.value = String(previousMs);
+    return;
+  }
+  els.chartRefreshApply.disabled = true;
+  els.chartRefreshStatus.textContent = "updating...";
+  try {
+    const response = await fetch("/api/chart-refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...dashboardHeaders },
+      body: JSON.stringify({ chart_refresh_ms: chartRefreshMs }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const retryAfter = response.headers.get("Retry-After");
+      const suffix = retryAfter ? ` Retry after ${retryAfter}s.` : "";
+      const error = new Error(`${result.error || `Chart refresh update failed (${response.status})`}.${suffix}`);
+      error.status = response.status;
+      throw error;
+    }
+    const confirmedMs = Number(result.chart_refresh_ms);
+    if (!Number.isFinite(confirmedMs) || confirmedMs <= 0) {
+      throw new Error("Chart refresh update returned an invalid interval.");
+    }
+    if (saveToken !== chartRefreshSaveToken) return;
+    setRefreshCadence(confirmedMs, "broker feed");
+    els.orderResult.textContent = `Chart refresh set to ${money(confirmedMs / 1000, 2)}s.`;
+    refresh();
+  } catch (error) {
+    if (error.status === 404) {
+      setRefreshCadence(chartRefreshMs, "local");
+      els.orderResult.textContent = `Chart refresh set locally to ${money(chartRefreshMs / 1000, 2)}s. Restart the server to enable broker API sync.`;
+      return;
+    }
+    if (saveToken !== chartRefreshSaveToken) return;
+    setRefreshCadence(previousMs, "failed");
+    els.orderResult.textContent = error.message;
+  } finally {
+    if (saveToken === chartRefreshSaveToken) {
+      els.chartRefreshApply.disabled = false;
+    }
+  }
+}
+
+function queueChartRefreshSave() {
+  if (chartRefreshSaveTimer) window.clearTimeout(chartRefreshSaveTimer);
+  chartRefreshSaveTimer = window.setTimeout(setChartRefresh, 80);
 }
 
 els.orderType.addEventListener("change", () => {
@@ -633,6 +739,9 @@ els.sellButton.addEventListener("click", () => submitManualOrder("sell"));
 els.fundButton.addEventListener("click", fundUser);
 els.toggleRun.addEventListener("click", () => setRunning(!currentState?.running));
 els.reset.addEventListener("click", resetSimulation);
+els.chartRefreshSelect.addEventListener("input", queueChartRefreshSave);
+els.chartRefreshSelect.addEventListener("change", queueChartRefreshSave);
+els.chartRefreshApply.addEventListener("click", setChartRefresh);
 els.currencySelect.addEventListener("change", () => {
   localStorage.setItem(currencyStorageKey, els.currencySelect.value);
   localStorage.setItem(currencyModeStorageKey, "manual");
@@ -642,6 +751,6 @@ window.addEventListener("resize", () => {
   if (currentState) render(currentState);
 });
 
-loadCurrencyPreference().then(refresh);
-refreshTimer = window.setInterval(refresh, 650);
+setRefreshCadence(currentRefreshMs);
+loadChartRefreshPreference().then(loadCurrencyPreference).then(refresh);
 window.addEventListener("beforeunload", () => window.clearInterval(refreshTimer));
