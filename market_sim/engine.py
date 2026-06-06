@@ -134,6 +134,15 @@ class MatchingEngine:
         self._event_sequence = 0
         self._triggering_stops = False
         self._flash_crashed = False
+        self._circuit_upper = False   # upper circuit breaker triggered
+        self._circuit_lower = False   # lower circuit breaker triggered
+        self._realized_volatility = max(
+            float(self.config.get("min_realized_volatility", 0.00008)),
+            float(self.config.get("fundamental_volatility", 0.00045)),
+        )
+        self._news_impulse = 0.0
+        self._signed_flow: deque[float] = deque(maxlen=80)
+        self._liquidity_stress = 0.0
         if self.config.get("seed_order_book", True):
             self._seed_order_book()
         self.record_history()
@@ -197,9 +206,9 @@ class MatchingEngine:
             price = None
             time_in_force = "ioc"
         elif price is not None:
-            price = round(float(price), 4)
+            price = self._snap_tick(float(price))
         if stop_price is not None:
-            stop_price = round(float(stop_price), 4)
+            stop_price = self._snap_tick(float(stop_price))
 
         self._prune_outlier_orders()
 
@@ -318,27 +327,58 @@ class MatchingEngine:
 
         flash = self.config.get("flash_crash", {})
         if flash.get("enabled") and not self._flash_crashed and self.tick >= int(flash.get("tick", 80)):
-            self.fundamental_price *= 1 + float(flash.get("shock", -0.08))
+            flash_return = float(flash.get("shock", -0.08))
+            self.fundamental_price *= 1 + flash_return
+            self._liquidity_stress = min(3.0, self._liquidity_stress + abs(flash_return) * 12)
             self._flash_crashed = True
             self._emit("scenario_event", {"name": "flash_crash", "tick": self.tick, "shock": flash.get("shock")})
 
         trend = float(self.config.get("trend_per_tick", 0.0))
         recovery = float(flash.get("recovery", 0.0)) if self._flash_crashed else 0.0
-        drift_to_reference = (self.reference_price - self.fundamental_price) * float(self.config.get("mean_reversion", 0.00005))
-        random_walk = self.fundamental_price * random.gauss(0.0, float(self.config.get("fundamental_volatility", 0.00045)))
-        self.fundamental_price = max(
-            1.0,
-            self.fundamental_price * (1 + trend + recovery) + drift_to_reference + random_walk,
-        )
-
         if random.random() < float(self.config.get("news_probability", 0.015)):
             news_direction = random.choice([-1, 1])
             news_size = random.uniform(float(self.config.get("news_min", 0.0015)), float(self.config.get("news_max", 0.008)))
-            self.fundamental_price *= 1 + news_direction * news_size
-            self._emit("scenario_event", {"name": "news", "tick": self.tick, "direction": news_direction, "size": news_size})
+            self._news_impulse += news_direction * news_size
+            self._liquidity_stress = min(3.0, self._liquidity_stress + news_size * 5)
+            self._emit("scenario_event", {"name": "news", "tick": self.tick, "direction": news_direction, "size": round(news_size, 5)})
+
+        drift_to_reference = 0.0
+        if self.fundamental_price > 0:
+            drift_to_reference = (self.reference_price / self.fundamental_price - 1) * float(self.config.get("mean_reversion", 0.00005))
+        flow_impact = self._order_flow_return()
+        random_return = random.gauss(0.0, self._realized_volatility)
+        if random.random() < 0.012 + min(0.045, self._liquidity_stress * 0.015):
+            random_return *= random.uniform(2.0, 4.8)
+        return_move = trend + recovery + drift_to_reference + self._news_impulse + flow_impact + random_return
+        self.fundamental_price = max(1.0, self.fundamental_price * math.exp(max(-0.18, min(0.18, return_move))))
+        self._news_impulse *= float(self.config.get("news_decay", 0.82))
+        self._update_realized_volatility(return_move)
+        self._update_liquidity_stress(return_move)
+
+        # NSE-style circuit breaker: clamp fundamental price within ±circuit_limit_pct
+        # of the reference (start) price.  Once a circuit fires, orders on that side
+        # are blocked until the next session reset.
+        circuit_pct = float(self.config.get("circuit_limit_pct", 0.0))
+        if circuit_pct > 0:
+            upper = self.start_price * (1 + circuit_pct)
+            lower = self.start_price * (1 - circuit_pct)
+            if self.fundamental_price >= upper:
+                self.fundamental_price = upper
+                self._circuit_upper = True
+                self._emit("scenario_event", {"name": "circuit_upper", "tick": self.tick, "limit": round(upper, 2)})
+            elif self.fundamental_price <= lower:
+                self.fundamental_price = lower
+                self._circuit_lower = True
+                self._emit("scenario_event", {"name": "circuit_lower", "tick": self.tick, "limit": round(lower, 2)})
 
         self._expire_orders()
-        if random.random() < float(self.config.get("liquidity_probability", 0.55)):
+        self._cancel_queue_orders()
+        needs_liquidity = self.best_bid is None or self.best_ask is None
+        if needs_liquidity or random.random() < float(self.config.get("liquidity_probability", 0.55)):
+            self._replenish_background_depth()
+        for _ in range(3):
+            if self.best_bid is not None and self.best_ask is not None:
+                break
             self._replenish_background_depth()
         self._trigger_stop_orders()
         current_mid = self.reference_mid_price
@@ -390,6 +430,34 @@ class MatchingEngine:
         self._tick_low = None
         self._tick_close = None
 
+    def _order_flow_return(self) -> float:
+        imbalance = self._order_flow_imbalance()
+        coefficient = float(self.config.get("order_flow_price_impact", 0.000035))
+        return imbalance * coefficient * (1 + self._liquidity_stress)
+
+    def _order_flow_imbalance(self) -> float:
+        if not self._signed_flow:
+            return 0.0
+        depth = max(1.0, float(self.config.get("latent_liquidity_depth", 3200.0)) * max(0.1, float(self.config.get("depth_scale", 1.0))))
+        return max(-1.0, min(1.0, sum(self._signed_flow) / depth))
+
+    def _update_realized_volatility(self, return_move: float) -> None:
+        base = float(self.config.get("fundamental_volatility", 0.00045))
+        decay = max(0.0, min(0.995, float(self.config.get("volatility_decay", 0.94))))
+        clustering = max(0.0, float(self.config.get("volatility_clustering", 0.65)))
+        min_vol = max(0.0, float(self.config.get("min_realized_volatility", 0.00008)))
+        max_vol = max(min_vol, float(self.config.get("max_realized_volatility", 0.0045)))
+        target = max(min_vol, min(max_vol, base + abs(return_move) * clustering))
+        self._realized_volatility = max(min_vol, min(max_vol, decay * self._realized_volatility + (1 - decay) * target))
+
+    def _update_liquidity_stress(self, return_move: float) -> None:
+        base = max(float(self.config.get("fundamental_volatility", 0.00045)), 0.000001)
+        resilience = max(0.0, min(0.95, float(self.config.get("liquidity_resilience", 0.08))))
+        volatility_pressure = max(0.0, self._realized_volatility / base - 1.0) * 0.22
+        return_pressure = min(2.0, abs(return_move) * 18)
+        target = min(3.0, volatility_pressure + return_pressure)
+        self._liquidity_stress = max(0.0, min(3.0, self._liquidity_stress * (1 - resilience) + target * resilience))
+
     @property
     def best_bid(self) -> float | None:
         return self.bids[0].price if self.bids else None
@@ -403,6 +471,26 @@ class MatchingEngine:
         if self.best_bid is not None and self.best_ask is not None:
             return (self.best_bid + self.best_ask) / 2
         return self.last_price
+
+    @property
+    def depth_imbalance(self) -> float:
+        bid_depth = sum(order.remaining for order in self.bids[:5])
+        ask_depth = sum(order.remaining for order in self.asks[:5])
+        total = bid_depth + ask_depth
+        if total <= EPSILON:
+            return 0.0
+        return max(-1.0, min(1.0, (bid_depth - ask_depth) / total))
+
+    @property
+    def microprice(self) -> float:
+        if self.best_bid is None or self.best_ask is None:
+            return self.mid_price
+        bid_depth = sum(order.remaining for order in self.bids[:5])
+        ask_depth = sum(order.remaining for order in self.asks[:5])
+        total = bid_depth + ask_depth
+        if total <= EPSILON:
+            return self.mid_price
+        return (self.best_ask * bid_depth + self.best_bid * ask_depth) / total
 
     @property
     def reference_mid_price(self) -> float:
@@ -437,6 +525,7 @@ class MatchingEngine:
             "last_price": round(self.last_price, 4),
             "fundamental_price": round(self.fundamental_price, 4),
             "mid_price": round(self.mid_price, 4),
+            "microprice": round(self.microprice, 4),
             "reference_mid_price": round(self.reference_mid_price, 4),
             "mark_price": round(self.mark_price, 4),
             "best_bid": round(self.best_bid, 4) if self.best_bid is not None else None,
@@ -446,6 +535,10 @@ class MatchingEngine:
             "session_low": round(self.session_low, 4),
             "total_volume": round(self.total_volume, 4),
             "volatility": round(self.volatility, 6),
+            "realized_volatility": round(self._realized_volatility, 6),
+            "liquidity_stress": round(self._liquidity_stress, 4),
+            "order_flow_imbalance": round(self._order_flow_imbalance(), 6),
+            "depth_imbalance": round(self.depth_imbalance, 6),
             "fees": {
                 "maker_fee_rate": float(self.config.get("maker_fee_rate", 0.0)),
                 "taker_fee_rate": float(self.config.get("taker_fee_rate", 0.0)),
@@ -457,6 +550,9 @@ class MatchingEngine:
             "api_users": self._api_user_summaries(),
             "open_orders": self.list_orders(status="open", include_internal=False, limit=100),
             "events": list(self.events)[-100:],
+            "circuit_upper": self._circuit_upper,
+            "circuit_lower": self._circuit_lower,
+            "tick_size":     float(self.config.get("tick_size", 0.0)),
         }
 
     def _execute_active_order(self, order: Order) -> None:
@@ -514,10 +610,16 @@ class MatchingEngine:
         remaining = incoming.remaining
         if remaining <= EPSILON:
             return
-        tranche_count = min(10, max(1, int(math.ceil(remaining / 800))))
-        tranche_qty = remaining / tranche_count
+        available = self._latent_liquidity_available(incoming.side)
+        fillable = min(remaining, available)
+        if fillable <= EPSILON:
+            return
+        tranche_count = min(10, max(1, int(math.ceil(fillable / 800))))
+        tranche_qty = fillable / tranche_count
         for index in range(tranche_count):
-            qty = tranche_qty if index < tranche_count - 1 else incoming.remaining
+            qty = min(incoming.remaining, tranche_qty if index < tranche_count - 1 else fillable - tranche_qty * index)
+            if qty <= EPSILON:
+                break
             price = self._latent_liquidity_price(incoming.side, qty, index)
             if incoming.side == "buy":
                 buyer = incoming.owner
@@ -542,6 +644,15 @@ class MatchingEngine:
             )
             self._record_fill(incoming, trade.price, trade.quantity)
             incoming.remaining = max(0.0, incoming.remaining - qty)
+
+    def _latent_liquidity_available(self, side: str) -> float:
+        top_depth = sum(level["quantity"] for level in self._aggregate_book("sell" if side == "buy" else "buy", depth=5))
+        configured_depth = max(0.0, float(self.config.get("latent_liquidity_depth", 3200.0)))
+        depth_scale = max(0.05, float(self.config.get("depth_scale", 1.0)))
+        min_fraction = max(0.0, min(1.0, float(self.config.get("latent_min_fill_fraction", 0.18))))
+        stress_haircut = 1 / (1 + self._liquidity_stress * 0.9 + min(4.0, self.volatility * 75))
+        randomized = random.uniform(min_fraction, 1.0)
+        return (configured_depth * depth_scale + top_depth * 0.35) * stress_haircut * randomized
 
     def _execute_trade(
         self,
@@ -580,6 +691,8 @@ class MatchingEngine:
             seller_fee=round(seller_fee, 6),
         )
         self.trades.append(trade)
+        signed_quantity = quantity if aggressor_side == "buy" else -quantity
+        self._signed_flow.append(signed_quantity)
         self.last_price = price
         self.session_high = max(self.session_high, price)
         self.session_low = min(self.session_low, price)
@@ -607,11 +720,14 @@ class MatchingEngine:
         seller_account.fills += 1
         seller_account.volume += quantity
         seller_account.realized_notional += notional
-        buyer_account.refresh_equity_bounds(self.last_price)
-        seller_account.refresh_equity_bounds(self.last_price)
+        self._refresh_account_marks()
 
         self._emit("trade", self._trade_to_dict(trade))
         return trade
+
+    def _refresh_account_marks(self) -> None:
+        for account in self.accounts.values():
+            account.refresh_equity_bounds(self.last_price)
 
     def _apply_position(self, account: AgentAccount, side: str, price: float, quantity: float, fee: float) -> None:
         account.fees_paid += fee
@@ -683,6 +799,32 @@ class MatchingEngine:
                 self._expire_resting_order(order, expiry_reason)
         self.bids = fresh_bids
         self.asks = fresh_asks
+
+    def _cancel_queue_orders(self) -> None:
+        base_probability = max(0.0, float(self.config.get("order_cancel_probability", 0.018)))
+        if base_probability <= 0:
+            return
+        cancel_api = bool(self.config.get("cancel_api_resting_orders", False))
+        mid = max(0.01, self.reference_mid_price)
+        queue_decay = max(0.0, float(self.config.get("queue_decay_strength", 0.12)))
+        stress_multiplier = 1 + self._liquidity_stress * 0.9 + min(3.0, self.volatility * 80)
+
+        def keep_or_cancel(order: Order) -> bool:
+            if order.agent_type == "api-user" and not cancel_api:
+                return True
+            if order.agent_type in {"latent-liquidity"}:
+                return True
+            distance = abs((order.price or mid) / mid - 1)
+            age_multiplier = 1 + min(4.0, order.age_ticks * queue_decay / 25)
+            distance_multiplier = 1 + min(4.0, distance * 45)
+            probability = min(0.85, base_probability * age_multiplier * distance_multiplier * stress_multiplier)
+            if random.random() >= probability:
+                return True
+            self._expire_resting_order(order, "queue canceled")
+            return False
+
+        self.bids = [order for order in self.bids if keep_or_cancel(order)]
+        self.asks = [order for order in self.asks if keep_or_cancel(order)]
 
     def _prune_outlier_orders(self) -> None:
         fresh_bids: list[Order] = []
@@ -756,19 +898,37 @@ class MatchingEngine:
             return self.last_price >= order.stop_price
         return self.last_price <= order.stop_price
 
+    def _effective_depth_scale(self) -> float:
+        base = max(0.01, float(self.config.get("depth_scale", 1.0)))
+        stress_haircut = 1 / (1 + self._liquidity_stress * 0.75 + min(3.0, self.volatility * 45))
+        return max(0.01, base * stress_haircut)
+
+    def _effective_spread_scale(self) -> float:
+        base = max(0.01, float(self.config.get("spread_scale", 1.0)))
+        stress_markup = 1 + self._liquidity_stress * 0.55 + min(4.0, self.volatility * 55)
+        return max(0.01, base * stress_markup)
+
     def _replenish_background_depth(self) -> None:
         depth_owner = "background-depth"
-        levels = random.randint(1, 3)
+        stress = self._liquidity_stress + min(3.0, self.volatility * 70)
+        max_levels = 4 if stress < 0.8 else 3 if stress < 1.8 else 2
+        levels = random.randint(1, max_levels)
         last_weight = max(0.0, min(0.35, float(self.config.get("background_last_price_weight", 0.04))))
         bounded_last = self._bounded_price(self.last_price, float(self.config.get("max_reference_deviation", 0.04)))
-        base = self.fundamental_price * (1 - last_weight) + bounded_last * last_weight
-        depth_scale = float(self.config.get("depth_scale", 1.0))
-        spread_scale = float(self.config.get("spread_scale", 1.0))
+        base = (self.fundamental_price * (1 - last_weight) + bounded_last * last_weight) * (1 + self._order_flow_imbalance() * 0.0009)
+        depth_scale = self._effective_depth_scale()
+        spread_scale = self._effective_spread_scale()
         for _ in range(levels):
-            distance = random.uniform(0.0015, 0.014) * spread_scale
-            size = random.uniform(80, 650) * depth_scale
+            distance = random.lognormvariate(math.log(0.0045), 0.65) * spread_scale
+            distance = max(0.0007, min(0.035, distance))
+            size = random.lognormvariate(math.log(240), 0.55) * depth_scale
             bid_price = base * (1 - distance)
-            ask_price = base * (1 + distance + random.uniform(0.0002, 0.0025) * spread_scale)
+            ask_price = base * (1 + distance + random.uniform(0.0002, 0.0025 + stress * 0.0007) * spread_scale)
+            tick = max(0.0001, float(self.config.get("tick_size", 0.01)))
+            if self.best_ask is not None:
+                bid_price = min(bid_price, self.best_ask - tick)
+            if self.best_bid is not None:
+                ask_price = max(ask_price, self.best_bid + tick)
             self.submit_order(
                 side="buy",
                 quantity=size,
@@ -790,11 +950,11 @@ class MatchingEngine:
         self._trim_book()
 
     def _seed_order_book(self) -> None:
-        depth_scale = float(self.config.get("depth_scale", 1.0))
-        spread_scale = float(self.config.get("spread_scale", 1.0))
+        depth_scale = self._effective_depth_scale()
+        spread_scale = self._effective_spread_scale()
         for index in range(24):
-            distance = (0.0015 + index * 0.0014 + random.uniform(0.0, 0.0008)) * spread_scale
-            size = random.uniform(200, 900) * depth_scale
+            distance = (0.001 + index * 0.00125 + random.lognormvariate(math.log(0.00055), 0.45)) * spread_scale
+            size = random.lognormvariate(math.log(430), 0.45) * depth_scale
             self.submit_order(
                 side="buy",
                 quantity=size,
@@ -820,17 +980,62 @@ class MatchingEngine:
             return None
         if order.quantity > float(self.config.get("max_order_quantity", 1_000_000)):
             return "quantity exceeds max_order_quantity"
-        projected = account.inventory + order.quantity if order.side == "buy" else account.inventory - order.quantity
-        if not self.config.get("allow_short", True) and projected < -EPSILON:
+        reserved_cash, reserved_buy_qty, reserved_sell_qty = self._open_order_reservations(account.owner)
+        projected_long = account.inventory + reserved_buy_qty + (order.quantity if order.side == "buy" else 0.0)
+        projected_short = account.inventory - reserved_sell_qty - (order.quantity if order.side == "sell" else 0.0)
+        if not self.config.get("allow_short", True) and projected_short < -EPSILON:
             return "short selling is disabled"
-        if abs(projected) > float(self.config.get("max_position_abs", 1_000_000)):
+        if max(abs(projected_long), abs(projected_short)) > float(self.config.get("max_position_abs", 1_000_000)):
             return "projected position exceeds max_position_abs"
+        # NSE circuit breaker: block buy orders at upper circuit, sell at lower circuit
+        if self._circuit_upper and order.side == "buy" and order.order_type in {"limit", "market"}:
+            return "upper circuit breaker active — buy orders suspended"
+        if self._circuit_lower and order.side == "sell" and order.order_type in {"limit", "market"}:
+            return "lower circuit breaker active — sell orders suspended"
         if order.side == "buy":
-            estimated_price = order.price or self.best_ask or self.last_price
-            required_cash = estimated_price * order.quantity * (1 + float(self.config.get("taker_fee_rate", 0.0002)))
+            estimated_price = self._estimated_order_price(order)
+            required_cash = reserved_cash + estimated_price * order.quantity * (1 + float(self.config.get("taker_fee_rate", 0.0002)))
             if account.cash + EPSILON < required_cash:
                 return "insufficient buying power"
         return None
+
+    def _open_order_reservations(self, owner: str) -> tuple[float, float, float]:
+        reserved_cash = 0.0
+        reserved_buy_qty = 0.0
+        reserved_sell_qty = 0.0
+        fee_rate = float(self.config.get("taker_fee_rate", 0.0002))
+        for order in self.orders.values():
+            if order.owner != owner or order.status not in {"open", "partially_filled", "pending_trigger"}:
+                continue
+            remaining = max(0.0, order.remaining)
+            if remaining <= EPSILON:
+                continue
+            if order.side == "buy":
+                reserved_buy_qty += remaining
+                reserved_cash += self._estimated_order_price(order) * remaining * (1 + fee_rate)
+            else:
+                reserved_sell_qty += remaining
+        return reserved_cash, reserved_buy_qty, reserved_sell_qty
+
+    def _estimated_order_price(self, order: Order) -> float:
+        if order.price is not None:
+            return order.price
+        if order.stop_price is not None:
+            return order.stop_price
+        reference = self.best_ask if order.side == "buy" and self.best_ask is not None else self.best_bid
+        if reference is None:
+            reference = self.last_price
+        buffer = max(0.0, float(self.config.get("market_order_price_buffer", 0.02))) if order.order_type == "market" else 0.0
+        return max(0.01, reference * (1 + buffer if order.side == "buy" else 1 - buffer))
+
+    def _snap_tick(self, price: float) -> float:
+        """Round price to the nearest tick size if tick_size is configured."""
+        tick = float(self.config.get("tick_size", 0.0))
+        if tick <= 0:
+            return round(price, 4)
+        snapped = round(round(price / tick) * tick, 10)
+        decimals = max(0, -int(math.floor(math.log10(tick))) if tick < 1 else 0)
+        return round(snapped, decimals + 2)
 
     def _validate_order_input(
         self,
@@ -891,10 +1096,10 @@ class MatchingEngine:
         anchor = top_price if top_price is not None else self.last_price
         anchor = self._bounded_price(anchor, float(self.config.get("max_reference_deviation", 0.04)))
         normalized_qty = max(0.01, quantity / 1000.0)
-        volatility_bump = 1 + min(4.0, self.volatility * 80)
+        volatility_bump = 1 + min(4.0, self.volatility * 80) + self._liquidity_stress * 0.55
         impact = (0.00045 + 0.00085 * math.sqrt(normalized_qty)) * volatility_bump
         tranche_penalty = tranche_index * 0.00028
-        noise = random.uniform(0.00005, 0.00035)
+        noise = random.uniform(0.00005, 0.00035 + self._liquidity_stress * 0.00025)
         raw_price = anchor * (1 + direction * (impact + tranche_penalty + noise))
         return self._bounded_price(raw_price, float(self.config.get("max_latent_trade_deviation", 0.12)))
 
@@ -924,6 +1129,32 @@ class MatchingEngine:
             result.append({"price": round(price, 2), "quantity": round(quantity, 4), "cumulative": round(cumulative, 4)})
         return result
 
+    def inject_external_shock(self, return_move: float, *, source: str = "operator") -> dict[str, Any]:
+        if not math.isfinite(return_move):
+            raise ValueError("shock must be a finite decimal return")
+        if abs(return_move) > 0.12:
+            raise ValueError("shock must be between -0.12 and 0.12")
+
+        self.fundamental_price = max(1.0, self.fundamental_price * math.exp(return_move))
+        self._news_impulse += return_move * 0.35
+        self._liquidity_stress = min(3.0, self._liquidity_stress + abs(return_move) * 18)
+        max_volatility = max(
+            float(self.config.get("min_realized_volatility", 0.00008)),
+            float(self.config.get("max_realized_volatility", 0.0045)),
+        )
+        self._realized_volatility = min(
+            max_volatility,
+            max(self._realized_volatility, abs(return_move) * 0.12),
+        )
+        payload = {
+            "name": "operator_shock",
+            "source": source,
+            "tick": self.tick,
+            "shock": round(return_move, 6),
+        }
+        self._emit("scenario_event", payload)
+        return payload
+
     def _agent_summaries(self) -> list[dict[str, Any]]:
         summaries = []
         for account in self.accounts.values():
@@ -942,12 +1173,17 @@ class MatchingEngine:
         equity = account.mark_to_market(self.last_price)
         profit_loss = account.profit_loss(self.last_price)
         avg_trade_price = account.realized_notional / account.volume if account.volume else None
+        reserved_cash, reserved_buy_qty, reserved_sell_qty = self._open_order_reservations(account.owner)
         return {
             "owner": account.owner,
             "user": account.owner,
             "agent_type": account.agent_type,
             "initial_cash": round(account.initial_cash, 2),
             "cash": round(account.cash, 2),
+            "buying_power": round(max(0.0, account.cash - reserved_cash), 2),
+            "reserved_buying_power": round(reserved_cash, 2),
+            "reserved_buy_quantity": round(reserved_buy_qty, 4),
+            "reserved_sell_quantity": round(reserved_sell_qty, 4),
             "inventory": round(account.inventory, 4),
             "avg_entry_price": round(account.avg_entry_price, 4),
             "orders": account.orders,

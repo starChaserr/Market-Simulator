@@ -1,8 +1,8 @@
 # Market Simulator
 
-A dependency-light synthetic exchange sandbox for testing automated trading and algo-trading systems.
+A dependency-light synthetic exchange simulator for testing order handling, limit-order-book behavior, accounts, P/L, fees, risk checks, and market scenarios.
 
-The project runs a live single-symbol limit order book, internal market participants, REST APIs, Server-Sent Events, and a browser dashboard. It is meant for testing order handling, P/L accounting, strategy plumbing, and market-simulation behavior. It is not a market predictor.
+The simulator runs a single-symbol market with internal participants and an API surface for external strategies. It is not a market predictor and does not connect to live broker or exchange data.
 
 ## Features
 
@@ -10,21 +10,19 @@ The project runs a live single-symbol limit order book, internal market particip
 - Market, limit, stop, and stop-limit orders
 - `gtc`, `ioc`, and `fok` time-in-force support
 - Post-only limit order rejection
-- Order cancel and order status endpoints
-- API user accounts with starting capital, cash, inventory, realized P/L, unrealized P/L, fees, equity, and drawdown
+- Order cancel and order status APIs
+- API user accounts with cash, inventory, realized P/L, unrealized P/L, fees, equity, and drawdown
 - Maker/taker fee simulation
 - Risk checks for max order size, max position, shorting, and buying power
-- Broker-style API rate limits with per-second and per-minute request buckets
+- Open-order buying-power and position reservation
+- API rate limits with per-second and per-minute request buckets
 - Institutional, high-frequency market-making, random, and background-liquidity agents
-- Agent action tracking for buy, sell, buy/sell quoting, and hold states
-- Randomized internal agent counts and action intervals
+- Volatility clustering, order-flow impact, finite latent liquidity, queue cancellation, and stress-sensitive depth
 - Scenario modes for calm, trending, high volatility, flash crash, liquidity drought, mean reversion, and news shocks
-- Long-run stability guards for stale quotes, reference-price drift, and large-order latent liquidity
+- Live chaos control that changes volatility and liquidity without resetting agent accounts
 - Deterministic runs with `--seed`
-- REST API, OpenAPI spec, and Server-Sent Events stream
-- Configurable broker-style chart refresh cadence, separate from order execution
-- Live dashboard with candlesticks, volume, order book depth, trade tape, API user P/L, and internal agent activity
-- Privacy-friendly display-currency auto-selection from browser locale/timezone
+- Browser UI for charting, depth, trade tape, API accounts, manual orders, and regime resets
+- JSON REST API and Server-Sent Events stream
 
 ## Quick Start
 
@@ -32,28 +30,18 @@ The project runs a live single-symbol limit order book, internal market particip
 python3 main.py
 ```
 
-Open:
+The default market clock advances once per second with small scheduling jitter. Override it with `--tick-interval` when running accelerated tests.
+
+The API listens on:
 
 ```text
 http://127.0.0.1:8000
 ```
 
-OpenAPI:
+Open the simulator UI at:
 
 ```text
-http://127.0.0.1:8000/openapi.json
-```
-
-## Docker
-
-```bash
-docker compose up --build
-```
-
-Then open:
-
-```text
-http://127.0.0.1:8000
+http://127.0.0.1:8000/
 ```
 
 ## Scenarios
@@ -81,7 +69,13 @@ Optional JSON config override:
 python3 main.py --config config.local.json
 ```
 
-## API Usage
+## API Examples
+
+Health:
+
+```bash
+curl -sS http://127.0.0.1:8000/api/health
+```
 
 Create or fetch an account:
 
@@ -91,44 +85,12 @@ curl -sS -X POST http://127.0.0.1:8000/api/accounts \
   -d '{"user":"MyStrategy","starting_cash":1000000}'
 ```
 
-Add funds to an API account:
-
-```bash
-curl -sS -X POST http://127.0.0.1:8000/api/accounts/fund \
-  -H 'Content-Type: application/json' \
-  -d '{"user":"MyStrategy","amount":250000}'
-```
-
-Submit a market order:
+Submit an order:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/api/order \
   -H 'Content-Type: application/json' \
   -d '{"side":"buy","quantity":1000,"order_type":"market","user":"MyStrategy"}'
-```
-
-Submit a post-only limit order:
-
-```bash
-curl -sS -X POST http://127.0.0.1:8000/api/order \
-  -H 'Content-Type: application/json' \
-  -d '{"side":"buy","quantity":500,"order_type":"limit","price":99.5,"post_only":true,"user":"MyStrategy"}'
-```
-
-Submit an IOC order:
-
-```bash
-curl -sS -X POST http://127.0.0.1:8000/api/order \
-  -H 'Content-Type: application/json' \
-  -d '{"side":"sell","quantity":500,"order_type":"limit","price":101,"time_in_force":"ioc","user":"MyStrategy"}'
-```
-
-Submit a stop order:
-
-```bash
-curl -sS -X POST http://127.0.0.1:8000/api/order \
-  -H 'Content-Type: application/json' \
-  -d '{"side":"sell","quantity":200,"order_type":"stop","stop_price":98,"user":"MyStrategy"}'
 ```
 
 List orders:
@@ -149,10 +111,32 @@ Account state:
 curl -sS 'http://127.0.0.1:8000/api/account?user=MyStrategy'
 ```
 
-Resolve display currency:
+Full simulator state:
 
 ```bash
-curl -sS 'http://127.0.0.1:8000/api/currency?locale=en-IN&timezone=Asia/Kolkata'
+curl -sS http://127.0.0.1:8000/api/state
+```
+
+Change regime and reset:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/regime \
+  -H 'Content-Type: application/json' \
+  -d '{"scenario":"news_shock","seed":7331}'
+```
+
+Change live chaos without resetting:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/chaos \
+  -H 'Content-Type: application/json' \
+  -d '{"level":75,"source":"operator"}'
+```
+
+Run the guarded deterministic chaos operator:
+
+```bash
+python3 chaos_controller.py --seed 7331
 ```
 
 Live stream:
@@ -160,55 +144,6 @@ Live stream:
 ```bash
 curl -N http://127.0.0.1:8000/api/stream
 ```
-
-Get or set the broker-style chart refresh cadence:
-
-```bash
-curl -sS http://127.0.0.1:8000/api/chart-refresh
-curl -sS -X POST http://127.0.0.1:8000/api/chart-refresh \
-  -H 'Content-Type: application/json' \
-  -d '{"chart_refresh_ms":5000}'
-```
-
-Trading endpoints still accept orders whenever the API rate limits allow them; this setting only controls chart/history sampling and dashboard polling cadence.
-
-## API User Names
-
-Orders can identify the strategy/model with any of these JSON fields:
-
-- `user`
-- `user_name`
-- `username`
-- `api_user`
-- `client`
-- `client_id`
-- `model`
-- `owner`
-- `name`
-
-Or headers:
-
-- `X-API-User`
-- `X-Client-Name`
-- `X-Model-Name`
-
-## API Rate Limits
-
-API routes return rate-limit headers:
-
-- `X-RateLimit-Limit-Second`
-- `X-RateLimit-Limit-Minute`
-- `X-RateLimit-Remaining-Second`
-- `X-RateLimit-Remaining-Minute`
-- `Retry-After` on `429 Too Many Requests`
-
-Requests are bucketed by API class plus user/model when a request includes `user`, `client_id`, `model`, or an equivalent header. Anonymous requests fall back to the client IP address. Market data, trading, account, and control endpoints use separate buckets so heavy chart/state polling does not block order submission or chart-refresh setting changes. Defaults are `25` requests per second and `900` requests per minute, configurable through JSON config keys `api_rate_limit_enabled`, `api_rate_limit_per_second`, and `api_rate_limit_per_minute`.
-
-## Currency Display
-
-The simulator keeps one synthetic price series internally. The dashboard formats that synthetic quote currency based on the browser's locale and time zone, without requesting precise location or calling an external IP-geolocation service. The header currency selector lets users override the detected currency, and that choice is saved in browser local storage.
-
-API clients can use `/api/currency` or send `X-Client-Locale`, `X-Client-Timezone`, or `X-Currency` headers if they want the same preference logic.
 
 ## Testing
 
@@ -219,13 +154,14 @@ python3 -m unittest discover -s tests
 ## Project Layout
 
 ```text
-main.py                  HTTP server and route handling
-example_agents/          Standalone API trading agents and competition runner
+main.py                  API server and route handling
+chaos_controller.py      Guarded live market-chaos operator
+example_agents/          Optional API agents for testing the simulator
 market_sim/config.py     Defaults and scenario definitions
 market_sim/engine.py     Matching engine, order lifecycle, accounts, P/L
-market_sim/simulation.py Background simulation loop and agent behavior
-static/                  Dashboard and OpenAPI spec
-tests/                   Unit tests
+market_sim/simulation.py Background simulation loop and internal agent behavior
+static/                  Browser simulator UI
+tests/                   Simulator unit tests
 ```
 
 ## License

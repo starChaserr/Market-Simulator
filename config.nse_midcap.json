@@ -1,0 +1,26 @@
+{
+  "_comment": "NSE market STRUCTURE (tick/circuit/fees/risk) for a ~mid-cap. Price DYNAMICS come from --scenario so the same structure can be tested across calm/trend/chop/crash. Keep this structure-only; do not hardcode trend/volatility here.",
+
+  "tick_size":              0.05,
+  "circuit_limit_pct":      0.10,
+
+  "maker_fee_rate":         0.0003,
+  "taker_fee_rate":         0.0006,
+  "api_starting_cash":      500000,
+
+  "max_order_quantity":     10000,
+  "max_position_abs":       50000,
+  "allow_short":            true,
+  "enforce_risk_limits":    true,
+
+  "max_reference_deviation":      0.06,
+  "max_resting_order_deviation":  0.10,
+  "max_latent_trade_deviation":   0.14,
+  "background_last_price_weight": 0.05,
+
+  "agent_counts": {
+    "institutional": [4, 8],
+    "high_frequency": [8, 18],
+    "random": [30, 55]
+  }
+}

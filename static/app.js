@@ -1,138 +1,80 @@
 const els = {
+  connectionState: document.querySelector("#connectionState"),
+  toggleRun: document.querySelector("#toggleRun"),
+  resetMarket: document.querySelector("#resetMarket"),
+  scenarioSelect: document.querySelector("#scenarioSelect"),
+  seedInput: document.querySelector("#seedInput"),
+  refreshSelect: document.querySelector("#refreshSelect"),
+  chaosLevel: document.querySelector("#chaosLevel"),
+  chaosReadout: document.querySelector("#chaosReadout"),
+  chaosSource: document.querySelector("#chaosSource"),
+  applyChaos: document.querySelector("#applyChaos"),
+  applyRegime: document.querySelector("#applyRegime"),
   lastPrice: document.querySelector("#lastPrice"),
   bidAsk: document.querySelector("#bidAsk"),
   spread: document.querySelector("#spread"),
+  microprice: document.querySelector("#microprice"),
+  realizedVol: document.querySelector("#realizedVol"),
+  liquidityStress: document.querySelector("#liquidityStress"),
+  orderFlow: document.querySelector("#orderFlow"),
   volume: document.querySelector("#volume"),
-  volatility: document.querySelector("#volatility"),
+  symbolTitle: document.querySelector("#symbolTitle"),
   chartSubhead: document.querySelector("#chartSubhead"),
-  marketState: document.querySelector("#marketState"),
-  currencySelect: document.querySelector("#currencySelect"),
-  currencySource: document.querySelector("#currencySource"),
-  chartRefreshSelect: document.querySelector("#chartRefreshSelect"),
-  chartRefreshApply: document.querySelector("#chartRefreshApply"),
-  chartRefreshStatus: document.querySelector("#chartRefreshStatus"),
+  tickValue: document.querySelector("#tickValue"),
+  scenarioValue: document.querySelector("#scenarioValue"),
   priceCanvas: document.querySelector("#priceCanvas"),
   bookCanvas: document.querySelector("#bookCanvas"),
+  depthImbalance: document.querySelector("#depthImbalance"),
+  orderForm: document.querySelector("#orderForm"),
   userName: document.querySelector("#userName"),
   quantity: document.querySelector("#quantity"),
   orderType: document.querySelector("#orderType"),
-  price: document.querySelector("#price"),
-  priceCurrencyHint: document.querySelector("#priceCurrencyHint"),
-  fundCurrencyHint: document.querySelector("#fundCurrencyHint"),
-  fundingAmount: document.querySelector("#fundingAmount"),
-  fundButton: document.querySelector("#fundButton"),
+  limitPrice: document.querySelector("#limitPrice"),
+  stopPrice: document.querySelector("#stopPrice"),
+  timeInForce: document.querySelector("#timeInForce"),
+  postOnly: document.querySelector("#postOnly"),
   buyButton: document.querySelector("#buyButton"),
   sellButton: document.querySelector("#sellButton"),
+  fundingAmount: document.querySelector("#fundingAmount"),
+  fundButton: document.querySelector("#fundButton"),
   orderResult: document.querySelector("#orderResult"),
-  toggleRun: document.querySelector("#toggleRun"),
-  reset: document.querySelector("#reset"),
-  agentsTable: document.querySelector("#agentsTable"),
-  usersTable: document.querySelector("#usersTable"),
   tradesTable: document.querySelector("#tradesTable"),
+  accountsTable: document.querySelector("#accountsTable"),
+  accountCount: document.querySelector("#accountCount"),
+  agentsTable: document.querySelector("#agentsTable"),
   agentCounts: document.querySelector("#agentCounts"),
+  ordersTable: document.querySelector("#ordersTable"),
+  eventsList: document.querySelector("#eventsList"),
 };
+
+const dashboardHeaders = { "X-API-User": "Dashboard UI" };
+const fallbackScenarios = [
+  "default",
+  "calm",
+  "high_volatility",
+  "trending_up",
+  "trending_down",
+  "flash_crash",
+  "liquidity_drought",
+  "mean_reverting",
+  "news_shock",
+];
 
 let currentState = null;
 let refreshTimer = null;
-let currentRefreshMs = 1000;
-let chartRefreshSaveTimer = null;
-let chartRefreshSaveToken = 0;
-let displayLocale = navigator.language || "en-US";
-let displayCurrency = "USD";
-const currencyStorageKey = "market-simulator-display-currency";
-const currencyModeStorageKey = "market-simulator-display-currency-mode";
-const dashboardHeaders = { "X-API-User": "Dashboard UI" };
+let refreshMs = Number(els.refreshSelect.value);
+let lastDrawState = null;
 
-async function loadCurrencyPreference() {
-  const savedCurrency = localStorage.getItem(currencyStorageKey);
-  const savedMode = localStorage.getItem(currencyModeStorageKey);
-  const locale = browserLocale();
-  const timezone = browserTimezone();
-
-  try {
-    const params = new URLSearchParams({ locale, timezone });
-    const response = await fetch(`/api/currency?${params.toString()}`, { cache: "no-store", headers: dashboardHeaders });
-    if (!response.ok) throw new Error(`Currency request failed: ${response.status}`);
-    const preference = await response.json();
-    if (savedCurrency && savedMode === "manual") {
-      setCurrency(savedCurrency, preference.locale || locale || displayLocale, "manual");
-      return;
-    }
-    if (savedCurrency) {
-      localStorage.removeItem(currencyStorageKey);
-      localStorage.removeItem(currencyModeStorageKey);
-    }
-    setCurrency(
-      preference.currency || displayCurrency,
-      preference.locale || locale || displayLocale,
-      currencySourceLabel(preference),
-    );
-  } catch (_error) {
-    if (savedCurrency && savedMode === "manual") {
-      setCurrency(savedCurrency, locale || displayLocale, "manual");
-      return;
-    }
-    setCurrency(displayCurrency, displayLocale, "default");
-  }
+function esc(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
-function browserLocale() {
-  if (navigator.languages?.length) return navigator.languages[0];
-  return navigator.language || "";
-}
-
-function browserTimezone() {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
-  } catch (_error) {
-    return "";
-  }
-}
-
-function currencySourceLabel(preference) {
-  if (!preference?.source || preference.source === "default") return "default";
-  return preference.region ? `auto ${preference.region}` : `auto ${preference.source}`;
-}
-
-function setCurrency(currency, locale, source) {
-  displayCurrency = String(currency || "USD").toUpperCase();
-  displayLocale = locale || displayLocale || "en-US";
-  ensureCurrencyOption(displayCurrency);
-  els.currencySelect.value = displayCurrency;
-  els.currencySource.textContent = source;
-  els.priceCurrencyHint.textContent = `(${displayCurrency})`;
-  els.fundCurrencyHint.textContent = `(${displayCurrency})`;
-  if (currentState) render(currentState);
-}
-
-function setRefreshCadence(refreshMs, source = "broker feed") {
-  const nextMs = Math.max(250, Math.min(Number(refreshMs) || 1000, 60000));
-  currentRefreshMs = nextMs;
-  ensureChartRefreshOption(nextMs);
-  els.chartRefreshSelect.value = String(nextMs);
-  els.chartRefreshStatus.textContent = source;
-  if (refreshTimer) window.clearInterval(refreshTimer);
-  refreshTimer = window.setInterval(refresh, currentRefreshMs);
-}
-
-function ensureChartRefreshOption(refreshMs) {
-  const value = String(refreshMs);
-  if ([...els.chartRefreshSelect.options].some((option) => option.value === value)) return;
-  const option = document.createElement("option");
-  option.value = value;
-  option.textContent = refreshMs >= 60000 ? `${money(refreshMs / 60000, 1)}m` : `${money(refreshMs / 1000, 2)}s`;
-  els.chartRefreshSelect.appendChild(option);
-}
-
-function ensureCurrencyOption(currency) {
-  if ([...els.currencySelect.options].some((option) => option.value === currency)) return;
-  const option = document.createElement("option");
-  option.value = currency;
-  option.textContent = currency;
-  els.currencySelect.appendChild(option);
-}
-
-function money(value, digits = 2) {
+function num(value, digits = 2) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
   return Number(value).toLocaleString(undefined, {
     minimumFractionDigits: digits,
@@ -140,617 +82,576 @@ function money(value, digits = 2) {
   });
 }
 
-function compact(value) {
+function compact(value, digits = 2) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
   return Number(value).toLocaleString(undefined, {
     notation: "compact",
-    maximumFractionDigits: 2,
+    maximumFractionDigits: digits,
   });
 }
 
-function formatCurrency(value, digits = 2) {
+function pct(value, digits = 2) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+  return `${(Number(value) * 100).toFixed(digits)}%`;
+}
+
+function signed(value, digits = 2) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+  const number = Number(value);
+  return `${number > 0 ? "+" : ""}${num(number, digits)}`;
+}
+
+function classForNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || Math.abs(number) < 1e-9) return "flat";
+  return number > 0 ? "positive" : "negative";
+}
+
+async function request(path, options = {}) {
+  const headers = { ...dashboardHeaders, ...(options.headers || {}) };
+  if (options.body !== undefined) headers["Content-Type"] = "application/json";
+  const response = await fetch(path, { cache: "no-store", ...options, headers });
+  const raw = await response.text();
+  let payload = {};
+  if (raw) {
+    try {
+      payload = JSON.parse(raw);
+    } catch (_error) {
+      payload = { raw };
+    }
+  }
+  if (!response.ok) {
+    throw new Error(payload.error || `Request failed with status ${response.status}`);
+  }
+  return payload;
+}
+
+function setConnection(online, running = true) {
+  els.connectionState.classList.toggle("offline", !online);
+  els.connectionState.classList.toggle("paused", online && !running);
+  els.connectionState.textContent = online ? (running ? "Live" : "Paused") : "Offline";
+}
+
+function setResult(message, isError = false) {
+  els.orderResult.textContent = message;
+  els.orderResult.classList.toggle("negative", isError);
+}
+
+function fillScenarioSelect(scenarios, selected) {
+  const current = selected || els.scenarioSelect.value || "default";
+  els.scenarioSelect.innerHTML = "";
+  for (const scenario of scenarios) {
+    const option = document.createElement("option");
+    option.value = scenario;
+    option.textContent = scenario.replaceAll("_", " ");
+    els.scenarioSelect.appendChild(option);
+  }
+  if (scenarios.includes(current)) {
+    els.scenarioSelect.value = current;
+  }
+}
+
+async function loadConfig() {
   try {
-    return new Intl.NumberFormat(displayLocale, {
-      style: "currency",
-      currency: displayCurrency,
-      currencyDisplay: "narrowSymbol",
-      minimumFractionDigits: digits,
-      maximumFractionDigits: digits,
-    }).format(Number(value));
+    const config = await request("/api/config");
+    fillScenarioSelect(config.scenarios || fallbackScenarios, config.scenario);
+    els.seedInput.value = config.seed ?? "";
+    updateChaosControls(config.chaos);
   } catch (_error) {
-    return `${displayCurrency} ${money(value, digits)}`;
-  }
-}
-
-function signedClass(side) {
-  return side === "buy" ? "side-buy" : "side-sell";
-}
-
-function resizeCanvas(canvas) {
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  const width = Math.max(1, Math.floor(rect.width * dpr));
-  const height = Math.max(1, Math.floor(rect.height * dpr));
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width;
-    canvas.height = height;
-  }
-  const ctx = canvas.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  return { ctx, width: rect.width, height: rect.height };
-}
-
-async function fetchState() {
-  const response = await fetch("/api/state", { cache: "no-store", headers: dashboardHeaders });
-  if (!response.ok) throw new Error(`State request failed: ${response.status}`);
-  return response.json();
-}
-
-async function loadChartRefreshPreference() {
-  try {
-    const response = await fetch("/api/chart-refresh", { cache: "no-store", headers: dashboardHeaders });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      if (response.status === 404) {
-        els.chartRefreshStatus.textContent = "local";
-        return;
-      }
-      const retryAfter = response.headers.get("Retry-After");
-      const suffix = retryAfter ? ` Retry after ${retryAfter}s.` : "";
-      throw new Error(`${result.error || `Chart refresh request failed (${response.status})`}.${suffix}`);
-    }
-    const confirmedMs = Number(result.chart_refresh_ms);
-    if (Number.isFinite(confirmedMs) && confirmedMs > 0) {
-      setRefreshCadence(confirmedMs, "broker feed");
-    }
-  } catch (error) {
-    els.chartRefreshStatus.textContent = "default";
-    els.orderResult.textContent = error.message;
+    fillScenarioSelect(fallbackScenarios, "default");
   }
 }
 
 async function refresh() {
   try {
-    currentState = await fetchState();
-    render(currentState);
+    const state = await request("/api/state");
+    currentState = state;
+    render(state);
+    setConnection(true, state.running);
   } catch (error) {
-    els.marketState.textContent = "Offline";
-    els.marketState.classList.add("paused");
-    els.orderResult.textContent = error.message;
+    setConnection(false);
+    setResult(error.message, true);
   }
 }
 
 function render(state) {
-  if (state.chart_refresh_ms && Number(state.chart_refresh_ms) !== currentRefreshMs) {
-    setRefreshCadence(Number(state.chart_refresh_ms));
-  }
-  els.lastPrice.textContent = formatCurrency(state.last_price, 2);
-  els.bidAsk.textContent = `${formatCurrency(state.best_bid, 2)} / ${formatCurrency(state.best_ask, 2)}`;
-  els.spread.textContent = formatCurrency(state.spread, 4);
-  els.volume.textContent = compact(state.total_volume);
-  els.volatility.textContent = `${money(state.volatility * 100, 2)}%`;
-  els.chartSubhead.textContent = `${state.symbol} tick ${state.tick} | chart ${money((state.chart_refresh_ms || currentRefreshMs) / 1000, 2)}s | high ${formatCurrency(state.session_high, 2)} | low ${formatCurrency(state.session_low, 2)}`;
-  els.marketState.textContent = state.running ? "Live" : "Paused";
-  els.marketState.classList.toggle("paused", !state.running);
+  lastDrawState = state;
+  els.lastPrice.textContent = num(state.last_price, 2);
+  els.bidAsk.textContent = `${num(state.best_bid, 2)} / ${num(state.best_ask, 2)}`;
+  els.spread.textContent = num(state.spread, 2);
+  els.microprice.textContent = num(state.microprice, 2);
+  els.realizedVol.textContent = pct(state.realized_volatility, 3);
+  els.liquidityStress.textContent = num(state.liquidity_stress, 2);
+  els.orderFlow.textContent = signed(state.order_flow_imbalance, 3);
+  els.volume.textContent = compact(state.total_volume, 2);
+
+  els.symbolTitle.textContent = state.symbol || "SIM";
+  els.chartSubhead.textContent = `mark ${num(state.mark_price, 2)}  high ${num(state.session_high, 2)}  low ${num(state.session_low, 2)}`;
+  els.tickValue.textContent = `Tick ${state.tick ?? "--"}`;
+  els.scenarioValue.textContent = `${state.scenario || "default"}${state.seed === null || state.seed === undefined ? "" : ` #${state.seed}`}`;
+  updateChaosControls(state.chaos);
   els.toggleRun.textContent = state.running ? "Pause" : "Resume";
-  renderAgentCounts(state.agent_counts);
-  renderApiUsers(state.api_users || []);
-  renderAgents(state.agents);
-  renderTrades(state.trades);
+  els.depthImbalance.textContent = `imbalance ${signed(state.depth_imbalance, 3)}`;
+  if (state.scenario && document.activeElement !== els.scenarioSelect) {
+    els.scenarioSelect.value = state.scenario;
+  }
+  if (document.activeElement !== els.seedInput) {
+    els.seedInput.value = state.seed ?? "";
+  }
+  setOrderPlaceholders(state);
+
   drawPriceChart(state);
-  drawBook(state.order_book);
+  drawDepth(state);
+  renderTrades(state.trades || []);
+  renderAccounts(state.api_users || []);
+  renderAgents(state.agents || [], state.agent_counts || {});
+  renderOrders(state.open_orders || []);
+  renderEvents(state.events || []);
 }
 
-function renderAgentCounts(counts) {
-  const parts = Object.entries(counts || {}).map(([key, value]) => `${key}: ${value}`);
-  els.agentCounts.textContent = parts.join(" | ");
-}
-
-function renderApiUsers(users) {
-  els.usersTable.replaceChildren();
-  if (!users.length) {
-    const row = document.createElement("tr");
-    const cell = appendCell(row, "No API users yet. Submit orders with user, api_user, client_id, model, or X-API-User.");
-    cell.colSpan = 7;
-    els.usersTable.appendChild(row);
-    return;
+function updateChaosControls(chaos) {
+  if (!chaos) return;
+  const level = Math.round(Number(chaos.level) || 0);
+  if (document.activeElement !== els.chaosLevel) {
+    els.chaosLevel.value = String(level);
   }
-  for (const user of users.slice(0, 40)) {
-    const row = document.createElement("tr");
-    appendCell(row, user.user);
-    appendCell(row, formatCurrency(user.cash, 2));
-    appendCell(row, signedMoney(user.profit_loss), pnlClass(user.profit_loss));
-    appendCell(row, money(user.inventory, 2));
-    appendCell(row, compact(user.volume));
-    appendCell(row, String(user.orders));
-    appendCell(row, user.average_trade_price ? formatCurrency(user.average_trade_price, 2) : "--");
-    els.usersTable.appendChild(row);
-  }
+  els.chaosReadout.value = String(level);
+  els.chaosReadout.textContent = String(level);
+  els.chaosSource.textContent = `${chaos.profile || "controlled"} · ${chaos.source || "manual"}`;
 }
 
-function renderAgents(agents) {
-  els.agentsTable.replaceChildren();
-  for (const agent of agents.slice(0, 60)) {
-    const row = document.createElement("tr");
-    appendCell(row, agent.owner);
-    const typeCell = document.createElement("td");
-    const chip = document.createElement("span");
-    chip.className = "type-chip";
-    chip.textContent = agent.agent_type;
-    typeCell.appendChild(chip);
-    row.appendChild(typeCell);
-    const action = agent.extra?.last_action || "hold";
-    const actionCell = document.createElement("td");
-    const actionChip = document.createElement("span");
-    actionChip.className = `action-chip ${actionClass(action)}`;
-    actionChip.textContent = action.toUpperCase();
-    actionCell.appendChild(actionChip);
-    row.appendChild(actionCell);
-    appendCell(row, money(agent.inventory, 2));
-    appendCell(row, compact(agent.volume));
-    appendCell(row, signedMoney(agent.profit_loss), pnlClass(agent.profit_loss));
-    els.agentsTable.appendChild(row);
-  }
-}
-
-function actionClass(action) {
-  const normalized = String(action || "").toLowerCase();
-  if (normalized.includes("buy") && normalized.includes("sell")) return "action-mixed";
-  if (normalized.includes("buy")) return "action-buy";
-  if (normalized.includes("sell")) return "action-sell";
-  return "action-hold";
+function setOrderPlaceholders(state) {
+  const tick = Number(state.tick_size || 0.01);
+  const bid = Number(state.best_bid || state.last_price || 0);
+  const ask = Number(state.best_ask || state.last_price || 0);
+  const mid = Number(state.mid_price || state.last_price || 0);
+  els.limitPrice.placeholder = mid ? `limit near ${num(mid, tick >= 1 ? 0 : 2)}` : "price";
+  els.stopPrice.placeholder = bid && ask ? `trigger ${num((bid + ask) / 2, 2)}` : "trigger";
 }
 
 function renderTrades(trades) {
-  els.tradesTable.replaceChildren();
-  for (const trade of trades.slice(0, 80)) {
-    const row = document.createElement("tr");
-    const side = document.createElement("td");
-    side.className = signedClass(trade.aggressor_side);
-    side.textContent = trade.aggressor_side.toUpperCase();
-    row.appendChild(side);
-    appendCell(row, formatCurrency(trade.price, 2));
-    appendCell(row, money(trade.quantity, 2));
-    appendCell(row, shortName(trade.buyer));
-    appendCell(row, shortName(trade.seller));
-    els.tradesTable.appendChild(row);
+  const rows = trades.slice(0, 24).map((trade) => `
+    <tr>
+      <td class="side-${esc(trade.aggressor_side)}">${esc(trade.aggressor_side)}</td>
+      <td>${num(trade.price, 2)}</td>
+      <td>${num(trade.quantity, 4)}</td>
+      <td>${esc(trade.buyer)}</td>
+      <td>${esc(trade.seller)}</td>
+    </tr>
+  `);
+  els.tradesTable.innerHTML = rows.join("") || emptyRow(5, "No trades yet");
+}
+
+function renderAccounts(accounts) {
+  els.accountCount.textContent = `${accounts.length} active`;
+  const rows = accounts.slice(0, 20).map((account) => `
+    <tr>
+      <td>${esc(account.owner)}</td>
+      <td>${num(account.equity, 2)}</td>
+      <td class="${classForNumber(account.profit_loss)}">${signed(account.profit_loss, 2)}</td>
+      <td>${num(account.inventory, 4)}</td>
+      <td>${num(account.reserved_buying_power, 2)}</td>
+      <td>${account.orders ?? 0}</td>
+    </tr>
+  `);
+  els.accountsTable.innerHTML = rows.join("") || emptyRow(6, "No API accounts yet");
+}
+
+function renderAgents(agents, counts) {
+  els.agentCounts.textContent = Object.entries(counts).map(([type, count]) => `${type}: ${count}`).join("  ") || "--";
+  const rows = agents.slice(0, 24).map((agent) => {
+    const extra = agent.extra || {};
+    return `
+      <tr>
+        <td>${esc(agent.owner)}</td>
+        <td>${esc(agent.agent_type)}</td>
+        <td>${esc(extra.last_action || "hold")}</td>
+        <td class="${classForNumber(agent.profit_loss)}">${signed(agent.profit_loss, 2)}</td>
+        <td>${num(agent.inventory, 2)}</td>
+      </tr>
+    `;
+  });
+  els.agentsTable.innerHTML = rows.join("") || emptyRow(5, "No background agents");
+}
+
+function renderOrders(orders) {
+  const rows = orders.slice(0, 30).map((order) => `
+    <tr>
+      <td class="side-${esc(order.side)}">${esc(order.side)}</td>
+      <td>${esc(order.order_type)}</td>
+      <td>${num(order.price, 2)}</td>
+      <td>${num(order.remaining_quantity, 4)}</td>
+      <td>${esc(order.owner)}</td>
+      <td><button class="mini-button" type="button" data-cancel-order="${esc(order.id)}" data-owner="${esc(order.owner)}">Cancel</button></td>
+    </tr>
+  `);
+  els.ordersTable.innerHTML = rows.join("") || emptyRow(6, "No open API orders");
+}
+
+function renderEvents(events) {
+  const rows = events.slice(-12).reverse().map((event) => {
+    const payload = event.payload || {};
+    const detail = payload.name
+      || payload.reject_reason
+      || payload.status
+      || payload.side
+      || payload.owner
+      || "";
+    return `
+      <div class="event-item">
+        <strong>${esc(event.type || "event")}</strong>
+        <span>tick ${esc(payload.tick ?? "")} ${esc(detail)}</span>
+      </div>
+    `;
+  });
+  els.eventsList.innerHTML = rows.join("") || '<div class="event-item"><strong>Waiting</strong><span>No events yet</span></div>';
+}
+
+function emptyRow(colspan, message) {
+  return `<tr><td colspan="${colspan}" class="flat">${esc(message)}</td></tr>`;
+}
+
+function fitCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(1, Math.floor(rect.width));
+  const height = Math.max(1, Math.floor(rect.height));
+  const backingWidth = Math.max(1, Math.floor(width * dpr));
+  const backingHeight = Math.max(1, Math.floor(height * dpr));
+  if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
+    canvas.width = backingWidth;
+    canvas.height = backingHeight;
   }
-}
-
-function appendCell(row, text, className = "") {
-  const cell = document.createElement("td");
-  cell.textContent = text;
-  if (className) cell.className = className;
-  row.appendChild(cell);
-  return cell;
-}
-
-function signedMoney(value) {
-  const number = Number(value || 0);
-  const prefix = number > 0 ? "+" : number < 0 ? "-" : "";
-  return `${prefix}${formatCurrency(Math.abs(number), 2)}`;
-}
-
-function pnlClass(value) {
-  const number = Number(value || 0);
-  if (number > 0) return "pnl-positive";
-  if (number < 0) return "pnl-negative";
-  return "";
-}
-
-function shortName(value) {
-  if (!value) return "--";
-  return String(value)
-    .replace("institution-", "inst-")
-    .replace("market-maker-", "mm-")
-    .replace("external-liquidity", "latent");
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, width, height };
 }
 
 function drawPriceChart(state) {
-  const { ctx, width, height } = resizeCanvas(els.priceCanvas);
-  const history = (state.history || []).slice(-170);
+  const { ctx, width, height } = fitCanvas(els.priceCanvas);
   ctx.clearRect(0, 0, width, height);
-  drawTradingBackground(ctx, width, height);
-
-  if (history.length < 2) {
-    drawCentered(ctx, width, height, "Waiting for trades");
-    return;
-  }
-
-  const pad = { left: 14, right: 74, top: 18, bottom: 74 };
-  const plotW = width - pad.left - pad.right;
-  const priceH = height - pad.top - pad.bottom;
-  const volumeTop = height - 54;
-  const volumeH = 38;
-  const prices = history.flatMap((point) => [
-    point.high ?? point.last,
-    point.low ?? point.last,
-    point.fundamental,
-  ]);
-  const minPrice = Math.min(...prices);
-  const maxPrice = Math.max(...prices);
-  const padding = Math.max(0.02, (maxPrice - minPrice) * 0.08);
-  const lowBound = minPrice - padding;
-  const highBound = maxPrice + padding;
-  const range = Math.max(0.01, highBound - lowBound);
-  const y = (price) => pad.top + (highBound - price) / range * priceH;
-  const step = plotW / history.length;
-  const candleW = Math.max(3, Math.min(12, step * 0.62));
-  const x = (index) => pad.left + index * step + step / 2;
-
-  ctx.strokeStyle = "#e8ebe3";
-  ctx.lineWidth = 1;
-  ctx.fillStyle = "#5f686d";
-  ctx.font = "11px system-ui, sans-serif";
-  ctx.textAlign = "left";
-  for (let i = 0; i <= 6; i += 1) {
-    const yy = pad.top + priceH * i / 6;
-    ctx.beginPath();
-    ctx.moveTo(pad.left, yy);
-    ctx.lineTo(width - pad.right, yy);
-    ctx.stroke();
-    const label = highBound - range * i / 6;
-    ctx.fillText(formatCurrency(label, 2), width - pad.right + 10, yy + 4);
-  }
-  for (let i = 0; i < history.length; i += 24) {
-    const xx = x(i);
-    ctx.beginPath();
-    ctx.moveTo(xx, pad.top);
-    ctx.lineTo(xx, volumeTop + volumeH);
-    ctx.stroke();
-  }
-
-  const maxVolume = Math.max(1, ...history.map((point) => point.volume || 0));
-  for (let i = 0; i < history.length; i += 1) {
-    const point = history[i];
-    const open = point.open ?? history[i - 1]?.close ?? point.last;
-    const close = point.close ?? point.last;
-    const high = point.high ?? Math.max(open, close);
-    const low = point.low ?? Math.min(open, close);
-    const up = close >= open;
-    const color = up ? "#0f8f69" : "#d23f31";
-    const xx = x(i);
-    const bodyTop = y(Math.max(open, close));
-    const bodyBottom = y(Math.min(open, close));
-    const bodyHeight = Math.max(2, bodyBottom - bodyTop);
-
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(xx, y(high));
-    ctx.lineTo(xx, y(low));
-    ctx.stroke();
-
-    ctx.fillStyle = up ? "rgba(15, 143, 105, 0.88)" : "rgba(210, 63, 49, 0.9)";
-    ctx.fillRect(xx - candleW / 2, bodyTop, candleW, bodyHeight);
-
-    const barHeight = (point.volume || 0) / maxVolume * volumeH;
-    ctx.fillStyle = up ? "rgba(15, 143, 105, 0.24)" : "rgba(210, 63, 49, 0.22)";
-    ctx.fillRect(xx - candleW / 2, volumeTop + volumeH - barHeight, candleW, barHeight);
-  }
-
-  drawLine(ctx, history, x, y, "fundamental", "#b87503", 1.3, [5, 5]);
-  drawMovingAverage(ctx, history, x, y, 12, "#2563eb", 1.6);
-  drawMovingAverage(ctx, history, x, y, 30, "#7c3aed", 1.4);
-
-  const last = history[history.length - 1];
-  const lastY = y(last.close ?? last.last);
-  ctx.strokeStyle = "rgba(37, 99, 235, 0.45)";
-  ctx.setLineDash([4, 5]);
-  ctx.beginPath();
-  ctx.moveTo(pad.left, lastY);
-  ctx.lineTo(width - pad.right, lastY);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  const lastLabel = formatCurrency(last.close ?? last.last, 2);
-  const lastLabelWidth = Math.max(64, ctx.measureText(lastLabel).width + 14);
-  ctx.fillStyle = "#2563eb";
-  roundRect(ctx, width - pad.right + 5, lastY - 11, lastLabelWidth, 22, 5);
-  ctx.fill();
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "700 11px system-ui, sans-serif";
-  ctx.fillText(lastLabel, width - pad.right + 11, lastY + 4);
-
-  ctx.fillStyle = "#20272a";
-  ctx.font = "700 12px system-ui, sans-serif";
-  ctx.fillText("MA 12", pad.left + 8, pad.top + 16);
-  ctx.fillStyle = "#7c3aed";
-  ctx.fillText("MA 30", pad.left + 56, pad.top + 16);
-  ctx.fillStyle = "#b87503";
-  ctx.fillText("Fundamental", pad.left + 104, pad.top + 16);
-  ctx.textAlign = "left";
-}
-
-function drawLine(ctx, points, x, y, key, color, width, dash) {
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = width;
-  ctx.setLineDash(dash);
-  ctx.beginPath();
-  points.forEach((point, index) => {
-    const xx = x(index);
-    const yy = y(point[key]);
-    if (index === 0) ctx.moveTo(xx, yy);
-    else ctx.lineTo(xx, yy);
-  });
-  ctx.stroke();
-  ctx.restore();
-}
-
-function drawMovingAverage(ctx, points, x, y, windowSize, color, width) {
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = width;
-  ctx.beginPath();
-  let started = false;
-  for (let index = 0; index < points.length; index += 1) {
-    const start = Math.max(0, index - windowSize + 1);
-    const slice = points.slice(start, index + 1);
-    if (slice.length < Math.min(4, windowSize)) continue;
-    const average = slice.reduce((sum, point) => sum + (point.close ?? point.last), 0) / slice.length;
-    if (!started) {
-      ctx.moveTo(x(index), y(average));
-      started = true;
-    } else {
-      ctx.lineTo(x(index), y(average));
-    }
-  }
-  ctx.stroke();
-  ctx.restore();
-}
-
-function drawTradingBackground(ctx, width, height) {
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, width, height);
-  ctx.fillStyle = "#f8faf6";
-  ctx.fillRect(0, height - 62, width, 62);
-}
-
-function roundRect(ctx, x, y, width, height, radius) {
-  const r = Math.min(radius, width / 2, height / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + width, y, x + width, y + height, r);
-  ctx.arcTo(x + width, y + height, x, y + height, r);
-  ctx.arcTo(x, y + height, x, y, r);
-  ctx.arcTo(x, y, x + width, y, r);
-  ctx.closePath();
-}
-
-function drawBook(book) {
-  const { ctx, width, height } = resizeCanvas(els.bookCanvas);
-  ctx.clearRect(0, 0, width, height);
+  const history = (state.history || []).slice(-150);
   drawPanelBackground(ctx, width, height);
 
-  const bids = (book?.bids || []).slice(0, 12);
-  const asks = (book?.asks || []).slice(0, 12);
-  if (!bids.length && !asks.length) {
-    drawCentered(ctx, width, height, "No depth");
+  if (history.length < 2) {
+    drawCenteredText(ctx, width, height, "Waiting for price history");
     return;
   }
 
-  const pad = { left: 12, right: 12, top: 20, bottom: 20 };
-  const mid = width / 2;
-  const maxQty = Math.max(1, ...bids.map((level) => level.cumulative), ...asks.map((level) => level.cumulative));
-  const rows = Math.max(bids.length, asks.length, 1);
-  const rowH = (height - pad.top - pad.bottom) / rows;
+  const pad = { left: 54, right: 14, top: 18, bottom: 30 };
+  const chartWidth = width - pad.left - pad.right;
+  const chartHeight = height - pad.top - pad.bottom;
+  const highs = history.map((item) => Number(item.high ?? item.close ?? item.last));
+  const lows = history.map((item) => Number(item.low ?? item.close ?? item.last));
+  let maxPrice = Math.max(...highs, Number(state.fundamental_price || 0), Number(state.mark_price || 0));
+  let minPrice = Math.min(...lows, Number(state.fundamental_price || Infinity), Number(state.mark_price || Infinity));
+  if (!Number.isFinite(maxPrice) || !Number.isFinite(minPrice) || maxPrice <= minPrice) {
+    maxPrice = Number(state.last_price || 1) + 1;
+    minPrice = Number(state.last_price || 1) - 1;
+  }
+  const padding = Math.max((maxPrice - minPrice) * 0.08, 0.01);
+  maxPrice += padding;
+  minPrice -= padding;
+  const yFor = (price) => pad.top + (maxPrice - price) / (maxPrice - minPrice) * chartHeight;
+  const xFor = (index) => pad.left + index / Math.max(1, history.length - 1) * chartWidth;
 
-  ctx.strokeStyle = "#d8dbd2";
-  ctx.beginPath();
-  ctx.moveTo(mid, pad.top);
-  ctx.lineTo(mid, height - pad.bottom);
-  ctx.stroke();
+  drawGrid(ctx, pad, chartWidth, chartHeight, minPrice, maxPrice, yFor);
+  drawReferenceLine(ctx, history, xFor, yFor, "mark", "#2563eb");
+  drawReferenceLine(ctx, history, xFor, yFor, "fundamental", "#6d4aff");
 
-  drawBookSide(ctx, bids, {
-    x0: pad.left,
-    x1: mid - 8,
-    y0: pad.top,
-    rowH,
-    maxQty,
-    color: "rgba(8, 127, 91, 0.34)",
-    textColor: "#087f5b",
-    align: "left",
+  const candleWidth = Math.max(3, Math.min(9, chartWidth / history.length * 0.56));
+  history.forEach((bar, index) => {
+    const open = Number(bar.open ?? bar.close ?? bar.last);
+    const close = Number(bar.close ?? bar.last ?? open);
+    const high = Number(bar.high ?? Math.max(open, close));
+    const low = Number(bar.low ?? Math.min(open, close));
+    const x = xFor(index);
+    const up = close >= open;
+    ctx.strokeStyle = up ? "#087f5b" : "#c92a2a";
+    ctx.fillStyle = up ? "rgba(8, 127, 91, 0.72)" : "rgba(201, 42, 42, 0.72)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, yFor(high));
+    ctx.lineTo(x, yFor(low));
+    ctx.stroke();
+    const top = yFor(Math.max(open, close));
+    const bodyHeight = Math.max(2, Math.abs(yFor(open) - yFor(close)));
+    ctx.fillRect(x - candleWidth / 2, top, candleWidth, bodyHeight);
   });
 
-  drawBookSide(ctx, asks, {
-    x0: mid + 8,
-    x1: width - pad.right,
-    y0: pad.top,
-    rowH,
-    maxQty,
-    color: "rgba(201, 42, 42, 0.28)",
-    textColor: "#c92a2a",
-    align: "right",
-  });
-}
-
-function drawBookSide(ctx, levels, opts) {
-  ctx.font = "12px system-ui, sans-serif";
-  levels.forEach((level, index) => {
-    const y = opts.y0 + index * opts.rowH + 3;
-    const fullWidth = opts.x1 - opts.x0;
-    const barWidth = level.cumulative / opts.maxQty * fullWidth;
-    ctx.fillStyle = opts.color;
-    if (opts.align === "left") {
-      ctx.fillRect(opts.x1 - barWidth, y, barWidth, Math.max(7, opts.rowH - 5));
-      ctx.fillStyle = opts.textColor;
-      ctx.fillText(formatCurrency(level.price, 2), opts.x0 + 2, y + Math.min(18, opts.rowH - 2));
-      ctx.fillStyle = "#20272a";
-      ctx.fillText(compact(level.quantity), opts.x1 - 74, y + Math.min(18, opts.rowH - 2));
-    } else {
-      ctx.fillRect(opts.x0, y, barWidth, Math.max(7, opts.rowH - 5));
-      ctx.fillStyle = opts.textColor;
-      ctx.fillText(formatCurrency(level.price, 2), opts.x0 + 6, y + Math.min(18, opts.rowH - 2));
-      ctx.fillStyle = "#20272a";
-      ctx.fillText(compact(level.quantity), opts.x1 - 76, y + Math.min(18, opts.rowH - 2));
-    }
-  });
+  drawLastPriceLabel(ctx, width, yFor(Number(state.last_price)), state.last_price);
 }
 
 function drawPanelBackground(ctx, width, height) {
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, width, height);
-  ctx.fillStyle = "#fbfcf9";
-  ctx.fillRect(0, height * 0.72, width, height * 0.28);
 }
 
-function drawCentered(ctx, width, height, text) {
-  ctx.fillStyle = "#687176";
-  ctx.font = "700 14px system-ui, sans-serif";
+function drawGrid(ctx, pad, chartWidth, chartHeight, minPrice, maxPrice, yFor) {
+  ctx.strokeStyle = "#e5e9ed";
+  ctx.fillStyle = "#65717b";
+  ctx.lineWidth = 1;
+  ctx.font = "11px system-ui, sans-serif";
+  for (let i = 0; i <= 4; i += 1) {
+    const price = minPrice + (maxPrice - minPrice) * i / 4;
+    const y = yFor(price);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(pad.left + chartWidth, y);
+    ctx.stroke();
+    ctx.fillText(num(price, 2), 8, y + 4);
+  }
+  ctx.strokeStyle = "#aeb8c1";
+  ctx.strokeRect(pad.left, pad.top, chartWidth, chartHeight);
+}
+
+function drawReferenceLine(ctx, history, xFor, yFor, key, color) {
+  const points = history
+    .map((item, index) => ({ x: xFor(index), y: yFor(Number(item[key])), valid: Number.isFinite(Number(item[key])) }))
+    .filter((point) => point.valid);
+  if (points.length < 2) return;
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = 0.72;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  points.forEach((point, index) => {
+    if (index === 0) ctx.moveTo(point.x, point.y);
+    else ctx.lineTo(point.x, point.y);
+  });
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+function drawLastPriceLabel(ctx, width, y, price) {
+  if (!Number.isFinite(y)) return;
+  const label = num(price, 2);
+  ctx.strokeStyle = "#172026";
+  ctx.fillStyle = "#172026";
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(54, y);
+  ctx.lineTo(width - 14, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = "#172026";
+  ctx.fillRect(width - 82, y - 12, 68, 24);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "11px system-ui, sans-serif";
+  ctx.fillText(label, width - 76, y + 4);
+}
+
+function drawCenteredText(ctx, width, height, text) {
+  ctx.fillStyle = "#65717b";
+  ctx.font = "13px system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText(text, width / 2, height / 2);
   ctx.textAlign = "left";
 }
 
-async function submitManualOrder(side) {
-  const quantity = Number(els.quantity.value);
-  const orderType = els.orderType.value;
-  const price = els.price.value ? Number(els.price.value) : null;
-  if (!Number.isFinite(quantity) || quantity <= 0) {
-    els.orderResult.textContent = "Quantity must be positive.";
-    return;
-  }
-  if (orderType === "limit" && (!Number.isFinite(price) || price <= 0)) {
-    els.orderResult.textContent = "Limit price must be positive.";
+function drawDepth(state) {
+  const { ctx, width, height } = fitCanvas(els.bookCanvas);
+  ctx.clearRect(0, 0, width, height);
+  drawPanelBackground(ctx, width, height);
+
+  const bids = (state.order_book?.bids || []).slice(0, 14);
+  const asks = (state.order_book?.asks || []).slice(0, 14);
+  if (!bids.length && !asks.length) {
+    drawCenteredText(ctx, width, height, "No depth");
     return;
   }
 
-  const payload = { quantity, order_type: orderType, user: els.userName.value || "Dashboard User" };
-  if (orderType === "limit") payload.price = price;
-  els.orderResult.textContent = "Submitting...";
+  const pad = { left: 44, right: 44, top: 20, bottom: 26 };
+  const chartWidth = width - pad.left - pad.right;
+  const chartHeight = height - pad.top - pad.bottom;
+  const center = pad.left + chartWidth / 2;
+  const maxCum = Math.max(
+    ...bids.map((level) => Number(level.cumulative || level.quantity || 0)),
+    ...asks.map((level) => Number(level.cumulative || level.quantity || 0)),
+    1,
+  );
+  const rowHeight = chartHeight / Math.max(bids.length, asks.length, 1);
+
+  ctx.strokeStyle = "#e5e9ed";
+  ctx.beginPath();
+  ctx.moveTo(center, pad.top);
+  ctx.lineTo(center, pad.top + chartHeight);
+  ctx.stroke();
+
+  drawDepthSide(ctx, bids, center, pad.top, rowHeight, chartWidth / 2 - 8, maxCum, -1, "#087f5b");
+  drawDepthSide(ctx, asks, center, pad.top, rowHeight, chartWidth / 2 - 8, maxCum, 1, "#c92a2a");
+
+  ctx.fillStyle = "#65717b";
+  ctx.font = "11px system-ui, sans-serif";
+  ctx.fillText("bid", pad.left, height - 8);
+  ctx.fillText("ask", center + 8, height - 8);
+}
+
+function drawDepthSide(ctx, levels, center, top, rowHeight, maxWidth, maxCum, direction, color) {
+  ctx.font = "11px system-ui, sans-serif";
+  levels.forEach((level, index) => {
+    const cumulative = Number(level.cumulative || level.quantity || 0);
+    const width = Math.max(1, cumulative / maxCum * maxWidth);
+    const y = top + index * rowHeight + 3;
+    const x = direction < 0 ? center - width : center;
+    ctx.fillStyle = color === "#087f5b" ? "rgba(8, 127, 91, 0.16)" : "rgba(201, 42, 42, 0.16)";
+    ctx.fillRect(x, y, width, Math.max(2, rowHeight - 6));
+    ctx.fillStyle = color;
+    const priceText = num(level.price, 2);
+    const qtyText = compact(level.quantity, 1);
+    if (direction < 0) {
+      ctx.textAlign = "right";
+      ctx.fillText(priceText, center - 8, y + rowHeight / 2 + 2);
+      ctx.fillStyle = "#65717b";
+      ctx.fillText(qtyText, Math.max(42, center - width - 6), y + rowHeight / 2 + 2);
+    } else {
+      ctx.textAlign = "left";
+      ctx.fillText(priceText, center + 8, y + rowHeight / 2 + 2);
+      ctx.fillStyle = "#65717b";
+      ctx.fillText(qtyText, Math.min(center + width + 6, center + maxWidth - 30), y + rowHeight / 2 + 2);
+    }
+  });
+  ctx.textAlign = "left";
+}
+
+function updateOrderInputs() {
+  const type = els.orderType.value;
+  const needsLimit = type === "limit" || type === "stop_limit";
+  const needsStop = type === "stop" || type === "stop_limit";
+  els.limitPrice.disabled = !needsLimit;
+  els.stopPrice.disabled = !needsStop;
+  els.postOnly.disabled = !needsLimit;
+  if (!needsLimit) {
+    els.limitPrice.value = "";
+    els.postOnly.checked = false;
+  }
+  if (!needsStop) els.stopPrice.value = "";
+}
+
+async function submitOrder(side) {
   try {
-    const response = await fetch(`/api/${side}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Order rejected");
-    els.orderResult.textContent = `${side.toUpperCase()} ${money(result.filled_quantity, 2)} / ${money(result.requested_quantity, 2)} @ ${result.average_price ? formatCurrency(result.average_price, 2) : "resting"} (${result.status})`;
+    const type = els.orderType.value;
+    const payload = {
+      user: els.userName.value.trim() || "Dashboard User",
+      side,
+      quantity: Number(els.quantity.value),
+      order_type: type,
+      time_in_force: els.timeInForce.value,
+      post_only: els.postOnly.checked,
+    };
+    if (type === "limit" || type === "stop_limit") payload.price = Number(els.limitPrice.value);
+    if (type === "stop" || type === "stop_limit") payload.stop_price = Number(els.stopPrice.value);
+    const result = await request("/api/order", { method: "POST", body: JSON.stringify(payload) });
+    setResult(`${result.status}: ${side} ${num(result.filled_quantity, 4)} filled, ${num(result.remaining_quantity, 4)} remaining at ${num(result.average_price, 2)}`);
     await refresh();
   } catch (error) {
-    els.orderResult.textContent = error.message;
+    setResult(error.message, true);
   }
 }
 
 async function fundUser() {
-  const amount = Number(els.fundingAmount.value);
-  const user = els.userName.value || "Dashboard User";
-  if (!Number.isFinite(amount) || amount <= 0) {
-    els.orderResult.textContent = "Funding amount must be positive.";
-    return;
-  }
-
-  els.orderResult.textContent = "Funding...";
   try {
-    const response = await fetch("/api/accounts/fund", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user, amount }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Funding failed");
-    els.orderResult.textContent = `${result.user} funded. Cash ${formatCurrency(result.cash, 2)}.`;
+    const payload = {
+      user: els.userName.value.trim() || "Dashboard User",
+      amount: Number(els.fundingAmount.value),
+    };
+    const result = await request("/api/accounts/fund", { method: "POST", body: JSON.stringify(payload) });
+    setResult(`${result.owner} funded. Buying power ${num(result.buying_power, 2)}`);
     await refresh();
   } catch (error) {
-    els.orderResult.textContent = error.message;
+    setResult(error.message, true);
   }
 }
 
-async function setRunning(nextRunning) {
-  await fetch("/api/simulation", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...dashboardHeaders },
-    body: JSON.stringify({ running: nextRunning }),
-  });
-  await refresh();
-}
-
-async function resetSimulation() {
-  els.orderResult.textContent = "Resetting...";
-  await fetch("/api/reset", { method: "POST", headers: dashboardHeaders });
-  els.orderResult.textContent = "Simulation reset.";
-  await refresh();
-}
-
-async function setChartRefresh() {
-  const chartRefreshMs = Number(els.chartRefreshSelect.value);
-  const previousMs = currentRefreshMs;
-  const saveToken = ++chartRefreshSaveToken;
-  if (!Number.isFinite(chartRefreshMs) || chartRefreshMs <= 0) {
-    els.orderResult.textContent = "Chart refresh must be positive.";
-    els.chartRefreshSelect.value = String(previousMs);
-    return;
-  }
-  els.chartRefreshApply.disabled = true;
-  els.chartRefreshStatus.textContent = "updating...";
+async function toggleRunning() {
+  if (!currentState) return;
   try {
-    const response = await fetch("/api/chart-refresh", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...dashboardHeaders },
-      body: JSON.stringify({ chart_refresh_ms: chartRefreshMs }),
-    });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const retryAfter = response.headers.get("Retry-After");
-      const suffix = retryAfter ? ` Retry after ${retryAfter}s.` : "";
-      const error = new Error(`${result.error || `Chart refresh update failed (${response.status})`}.${suffix}`);
-      error.status = response.status;
-      throw error;
-    }
-    const confirmedMs = Number(result.chart_refresh_ms);
-    if (!Number.isFinite(confirmedMs) || confirmedMs <= 0) {
-      throw new Error("Chart refresh update returned an invalid interval.");
-    }
-    if (saveToken !== chartRefreshSaveToken) return;
-    setRefreshCadence(confirmedMs, "broker feed");
-    els.orderResult.textContent = `Chart refresh set to ${money(confirmedMs / 1000, 2)}s.`;
-    refresh();
+    await request("/api/simulation", { method: "POST", body: JSON.stringify({ running: !currentState.running }) });
+    await refresh();
   } catch (error) {
-    if (error.status === 404) {
-      setRefreshCadence(chartRefreshMs, "local");
-      els.orderResult.textContent = `Chart refresh set locally to ${money(chartRefreshMs / 1000, 2)}s. Restart the server to enable broker API sync.`;
-      return;
-    }
-    if (saveToken !== chartRefreshSaveToken) return;
-    setRefreshCadence(previousMs, "failed");
-    els.orderResult.textContent = error.message;
-  } finally {
-    if (saveToken === chartRefreshSaveToken) {
-      els.chartRefreshApply.disabled = false;
-    }
+    setResult(error.message, true);
   }
 }
 
-function queueChartRefreshSave() {
-  if (chartRefreshSaveTimer) window.clearTimeout(chartRefreshSaveTimer);
-  chartRefreshSaveTimer = window.setTimeout(setChartRefresh, 80);
+async function resetMarket() {
+  try {
+    await request("/api/reset", { method: "POST", body: JSON.stringify({}) });
+    setResult("Market reset");
+    await refresh();
+  } catch (error) {
+    setResult(error.message, true);
+  }
 }
 
-els.orderType.addEventListener("change", () => {
-  const isLimit = els.orderType.value === "limit";
-  els.price.disabled = !isLimit;
-  if (!isLimit) els.price.value = "";
-  if (isLimit && currentState?.last_price) els.price.placeholder = `${displayCurrency} ${money(currentState.last_price, 2)}`;
-});
-els.buyButton.addEventListener("click", () => submitManualOrder("buy"));
-els.sellButton.addEventListener("click", () => submitManualOrder("sell"));
+async function applyRegime() {
+  try {
+    const payload = {
+      scenario: els.scenarioSelect.value,
+      seed: els.seedInput.value.trim() === "" ? null : Number(els.seedInput.value),
+    };
+    await request("/api/regime", { method: "POST", body: JSON.stringify(payload) });
+    setResult(`Regime applied: ${payload.scenario}${payload.seed === null ? "" : ` #${payload.seed}`}`);
+    await loadConfig();
+    await refresh();
+  } catch (error) {
+    setResult(error.message, true);
+  }
+}
+
+async function applyChaos() {
+  try {
+    const level = Number(els.chaosLevel.value);
+    const result = await request("/api/chaos", {
+      method: "POST",
+      body: JSON.stringify({ level, source: "dashboard override" }),
+    });
+    updateChaosControls(result.chaos);
+    setResult(`Chaos set to ${level}. The controller may adjust it on its next cycle.`);
+  } catch (error) {
+    setResult(error.message, true);
+  }
+}
+
+async function cancelOrder(orderId, owner) {
+  try {
+    await request("/api/cancel", { method: "POST", body: JSON.stringify({ order_id: orderId, user: owner }) });
+    setResult(`Canceled ${orderId}`);
+    await refresh();
+  } catch (error) {
+    setResult(error.message, true);
+  }
+}
+
+function setRefreshCadence() {
+  refreshMs = Number(els.refreshSelect.value) || 1000;
+  if (refreshTimer) window.clearInterval(refreshTimer);
+  refreshTimer = window.setInterval(refresh, refreshMs);
+}
+
+els.orderType.addEventListener("change", updateOrderInputs);
+els.buyButton.addEventListener("click", () => submitOrder("buy"));
+els.sellButton.addEventListener("click", () => submitOrder("sell"));
 els.fundButton.addEventListener("click", fundUser);
-els.toggleRun.addEventListener("click", () => setRunning(!currentState?.running));
-els.reset.addEventListener("click", resetSimulation);
-els.chartRefreshSelect.addEventListener("input", queueChartRefreshSave);
-els.chartRefreshSelect.addEventListener("change", queueChartRefreshSave);
-els.chartRefreshApply.addEventListener("click", setChartRefresh);
-els.currencySelect.addEventListener("change", () => {
-  localStorage.setItem(currencyStorageKey, els.currencySelect.value);
-  localStorage.setItem(currencyModeStorageKey, "manual");
-  setCurrency(els.currencySelect.value, navigator.language || displayLocale, "manual");
+els.toggleRun.addEventListener("click", toggleRunning);
+els.resetMarket.addEventListener("click", resetMarket);
+els.applyRegime.addEventListener("click", applyRegime);
+els.applyChaos.addEventListener("click", applyChaos);
+els.chaosLevel.addEventListener("input", () => {
+  els.chaosReadout.value = els.chaosLevel.value;
+  els.chaosReadout.textContent = els.chaosLevel.value;
+});
+els.refreshSelect.addEventListener("change", setRefreshCadence);
+els.ordersTable.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-cancel-order]");
+  if (!button) return;
+  cancelOrder(button.dataset.cancelOrder, button.dataset.owner);
 });
 window.addEventListener("resize", () => {
-  if (currentState) render(currentState);
+  if (lastDrawState) {
+    drawPriceChart(lastDrawState);
+    drawDepth(lastDrawState);
+  }
 });
 
-setRefreshCadence(currentRefreshMs);
-loadChartRefreshPreference().then(loadCurrencyPreference).then(refresh);
-window.addEventListener("beforeunload", () => window.clearInterval(refreshTimer));
+updateOrderInputs();
+loadConfig().then(refresh);
+setRefreshCadence();

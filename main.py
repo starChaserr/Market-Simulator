@@ -14,13 +14,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from market_sim.config import SCENARIOS
 from market_sim import MarketSimulator
-from market_sim.currency import currency_preferences
 
 
-ROOT = Path(__file__).resolve().parent
-STATIC_DIR = ROOT / "static"
-#Entry point
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 class ApiRateLimiter:
@@ -107,24 +105,28 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
         try:
             if not self._check_api_rate_limit(path, query=query):
                 return
+            if path == "/" or path in {"/app.js", "/styles.css"}:
+                self._send_static("index.html" if path == "/" else path.lstrip("/"))
+                return
+            if path.startswith("/static/"):
+                self._send_static(path.removeprefix("/static/"))
+                return
             if path == "/api/health":
                 self._send_json({"ok": True})
                 return
             if path == "/api/config":
-                self._send_json({"config": self.simulator.config, "scenario": self.simulator.config.get("scenario"), "seed": self.simulator.seed})
-                return
-            if path == "/api/currency":
                 self._send_json(
-                    currency_preferences(
-                        locale=self._query_one(query, "locale") or self.headers.get("X-Client-Locale"),
-                        timezone=self._query_one(query, "timezone") or self.headers.get("X-Client-Timezone"),
-                        explicit_currency=self._query_one(query, "currency") or self.headers.get("X-Currency"),
-                        accept_language=self.headers.get("Accept-Language"),
-                    )
+                    {
+                        "config": self.simulator.config,
+                        "scenario": self.simulator.config.get("scenario"),
+                        "seed": self.simulator.seed,
+                        "scenarios": sorted(SCENARIOS),
+                        "chaos": self.simulator.chaos_status(),
+                    }
                 )
                 return
-            if path == "/api/chart-refresh":
-                self._send_json(self.simulator.chart_refresh_settings())
+            if path == "/api/chaos":
+                self._send_json(self.simulator.chaos_status())
                 return
             if path == "/api/state":
                 self._send_json(self.simulator.snapshot())
@@ -175,10 +177,21 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
                     return
                 self._send_json(match)
                 return
-            if path == "/openapi.json":
-                self._serve_static("/openapi.json")
+            if path == "/api":
+                self._send_json(
+                    {
+                        "name": "market-simulator",
+                        "endpoints": [
+                            "GET /api/health",
+                            "GET /api/state",
+                            "GET /api/stream",
+                            "POST /api/order",
+                            "GET /api/accounts",
+                        ],
+                    }
+                )
                 return
-            self._serve_static(path)
+            self._send_error(HTTPStatus.NOT_FOUND, f"No route for {path}")
         except ValueError as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         except Exception as exc:
@@ -246,18 +259,28 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
                     raise ValueError("payload must include a running boolean")
                 self._send_json(self.simulator.set_running(bool(payload["running"])))
                 return
-            if path == "/api/chart-refresh":
-                interval = self._optional_float(payload.get("chart_refresh_interval", payload.get("interval")))
-                if interval is None:
-                    refresh_ms = self._optional_float(payload.get("chart_refresh_ms", payload.get("milliseconds")))
-                    if refresh_ms is not None:
-                        interval = refresh_ms / 1000
-                if interval is None:
-                    raise ValueError("payload must include chart_refresh_interval or chart_refresh_ms")
-                self._send_json(self.simulator.set_chart_refresh_interval(interval))
-                return
             if path == "/api/reset":
                 self._send_json(self.simulator.reset())
+                return
+            if path == "/api/regime":
+                scenario = payload.get("scenario")
+                seed_value = payload.get("seed", self.simulator.seed)
+                seed = None if seed_value in (None, "") else int(seed_value)
+                snapshot = self.simulator.configure(scenario=str(scenario) if scenario else None, seed=seed)
+                MarketRequestHandler.rate_limiter = ApiRateLimiter.from_config(self.simulator.config)
+                self._send_json(snapshot)
+                return
+            if path == "/api/chaos":
+                if "level" not in payload:
+                    raise ValueError("payload must include level")
+                shock = self._optional_float(payload.get("shock"))
+                self._send_json(
+                    self.simulator.set_chaos(
+                        float(payload["level"]),
+                        source=str(payload.get("source", "manual")),
+                        shock=shock,
+                    )
+                )
                 return
             self._send_error(HTTPStatus.NOT_FOUND, f"No route for {path}")
         except ValueError as exc:
@@ -284,20 +307,6 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         except Exception as exc:
             self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
-
-    def do_HEAD(self) -> None:
-        path = urlparse(self.path).path
-        if path == "/":
-            path = "/index.html"
-        candidate = (STATIC_DIR / path.lstrip("/")).resolve()
-        if candidate.exists() and candidate.is_file():
-            self.send_response(HTTPStatus.OK)
-            self._send_common_headers(mimetypes.guess_type(str(candidate))[0] or "application/octet-stream")
-            self.end_headers()
-            return
-        self.send_response(HTTPStatus.NOT_FOUND)
-        self._send_common_headers("application/json")
-        self.end_headers()
 
     def log_message(self, fmt: str, *args: Any) -> None:
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
@@ -344,9 +353,9 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
             return "data"
         if path in {"/api/buy", "/api/sell", "/api/order", "/api/cancel"} or path.startswith("/api/orders/"):
             return "trading"
-        if path in {"/api/chart-refresh", "/api/simulation", "/api/reset"}:
+        if path in {"/api/simulation", "/api/reset", "/api/regime", "/api/chaos"}:
             return "control"
-        if path in {"/api/accounts", "/api/accounts/fund", "/api/account", "/api/config", "/api/currency", "/api/health"}:
+        if path in {"/api/accounts", "/api/accounts/fund", "/api/account", "/api/config", "/api/health"}:
             return "account"
         return "api"
 
@@ -368,25 +377,6 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
         if user:
             return f"user:{str(user).strip()}"
         return f"client:{self.client_address[0]}"
-
-    def _serve_static(self, path: str) -> None:
-        if path == "/":
-            path = "/index.html"
-        relative = path.lstrip("/")
-        candidate = (STATIC_DIR / relative).resolve()
-        if not str(candidate).startswith(str(STATIC_DIR.resolve())):
-            self._send_error(HTTPStatus.FORBIDDEN, "Forbidden")
-            return
-        if not candidate.exists() or not candidate.is_file():
-            self._send_error(HTTPStatus.NOT_FOUND, "Not found")
-            return
-        content = candidate.read_bytes()
-        content_type = mimetypes.guess_type(str(candidate))[0] or "application/octet-stream"
-        self.send_response(HTTPStatus.OK)
-        self._send_common_headers(content_type)
-        self.send_header("Content-Length", str(len(content)))
-        self.end_headers()
-        self.wfile.write(content)
 
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
@@ -456,6 +446,7 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
             "running": snapshot.get("running"),
             "scenario": snapshot.get("scenario"),
             "seed": snapshot.get("seed"),
+            "chaos": snapshot.get("chaos"),
         }
 
     @staticmethod
@@ -495,12 +486,30 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
     def _send_error(self, status: HTTPStatus, message: str) -> None:
         self._send_json({"error": message, "status": status.value}, status=status)
 
+    def _send_static(self, relative_path: str) -> None:
+        target = (STATIC_DIR / relative_path).resolve()
+        try:
+            target.relative_to(STATIC_DIR.resolve())
+        except ValueError:
+            self._send_error(HTTPStatus.NOT_FOUND, "static asset not found")
+            return
+        if not target.is_file():
+            self._send_error(HTTPStatus.NOT_FOUND, "static asset not found")
+            return
+        content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        body = target.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self._send_common_headers(content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _send_common_headers(self, content_type: str) -> None:
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-User, X-Client-Name, X-Model-Name, X-Client-Locale, X-Client-Timezone, X-Currency")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-User, X-Client-Name, X-Model-Name")
         self.send_header("Access-Control-Expose-Headers", "Retry-After, X-RateLimit-Limit-Second, X-RateLimit-Limit-Minute, X-RateLimit-Remaining-Second, X-RateLimit-Remaining-Minute")
         self._send_rate_limit_headers()
 
@@ -545,12 +554,12 @@ class MarketRequestHandler(BaseHTTPRequestHandler):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the market simulator API and dashboard.")
+    parser = argparse.ArgumentParser(description="Run the market simulator API.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--symbol", default="SIM")
     parser.add_argument("--start-price", type=float, default=100.0)
-    parser.add_argument("--tick-interval", type=float, default=0.25)
+    parser.add_argument("--tick-interval", type=float, default=1.0)
     parser.add_argument("--scenario", default="default")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--config", default=None, help="Optional JSON config override file.")
@@ -573,12 +582,12 @@ def main() -> int:
 
     def shutdown(_signum: int, _frame: Any) -> None:
         simulator.stop()
-        server.shutdown()
+        threading.Thread(target=server.shutdown, name="http-shutdown", daemon=True).start()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
     print(f"Market simulator running at http://{args.host}:{args.port}")
-    print("API endpoints: GET /api/state, GET /api/stream, POST /api/order, GET /openapi.json")
+    print("API endpoints: GET /api/state, GET /api/stream, POST /api/order")
     try:
         server.serve_forever()
     finally:

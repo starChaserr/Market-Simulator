@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 import threading
 import time
-import math
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -169,17 +169,19 @@ class HighFrequencyTrader(BaseAgent):
 
         engine.cancel_orders_for_owner(self.owner, agent_type=self.agent_type)
         account = engine.accounts[self.owner]
-        fair = engine.reference_mid_price * 0.55 + engine.fundamental_price * 0.45
+        fair = engine.microprice * 0.50 + engine.reference_mid_price * 0.30 + engine.fundamental_price * 0.20
         inventory_skew = max(-0.004, min(0.004, account.inventory / self.max_inventory * 0.0018))
-        width = self.quote_width + random.uniform(0.0001, 0.0012) + min(0.004, engine.volatility * 0.2)
-        base_qty = random.uniform(12, 95)
+        flow_skew = engine.depth_imbalance * min(0.0012, self.quote_width * 0.7)
+        width = self.quote_width + random.uniform(0.0001, 0.0012) + min(0.006, engine.volatility * 0.35)
+        stress_haircut = 1 / (1 + float(getattr(engine, "_liquidity_stress", 0.0)) * 0.7)
+        base_qty = random.uniform(12, 95) * stress_haircut
         submitted_sides: list[str] = []
 
         if account.inventory < self.max_inventory:
             engine.submit_order(
                 side="buy",
                 quantity=base_qty,
-                price=fair * (1 - width - inventory_skew),
+                price=fair * (1 - width - inventory_skew + flow_skew),
                 order_type="limit",
                 owner=self.owner,
                 agent_type=self.agent_type,
@@ -190,7 +192,7 @@ class HighFrequencyTrader(BaseAgent):
             engine.submit_order(
                 side="sell",
                 quantity=base_qty * random.uniform(0.8, 1.2),
-                price=fair * (1 + width - inventory_skew),
+                price=fair * (1 + width - inventory_skew + flow_skew),
                 order_type="limit",
                 owner=self.owner,
                 agent_type=self.agent_type,
@@ -287,14 +289,11 @@ class RandomTrader(BaseAgent):
 
 
 class MarketSimulator:
-    MIN_CHART_REFRESH_INTERVAL = 0.25
-    MAX_CHART_REFRESH_INTERVAL = 60.0
-
     def __init__(
         self,
         symbol: str = "SIM",
         start_price: float = 100.0,
-        tick_interval: float = 0.25,
+        tick_interval: float = 1.0,
         *,
         scenario: str = "default",
         seed: int | None = None,
@@ -303,13 +302,15 @@ class MarketSimulator:
         if seed is not None:
             random.seed(seed)
         self.seed = seed
-        self.config = build_config(scenario=scenario, config_path=config_path)
+        self.config_path = config_path
+        self._regime_config = build_config(scenario=scenario, config_path=config_path)
+        self.config = deepcopy(self._regime_config)
+        self.chaos_level = 50.0
+        self.chaos_source = "regime baseline"
+        self.chaos_updated_at = time.time()
         self.engine = MatchingEngine(symbol=symbol, start_price=start_price, config=self.config)
         self.tick_interval = tick_interval
-        self.chart_refresh_interval = self._normalize_chart_refresh_interval(self.config.get("chart_refresh_interval", 1.0))
-        self.config["chart_refresh_interval"] = self.chart_refresh_interval
-        self._last_chart_recorded_at = time.monotonic()
-        self.interval_jitter = 0.45
+        self.interval_jitter = 0.12
         self.last_loop_sleep = tick_interval
         self.running = True
         self.started_at = time.time()
@@ -440,28 +441,91 @@ class MarketSimulator:
             self.running = bool(running)
             return self.snapshot()
 
-    def chart_refresh_settings(self) -> dict[str, Any]:
-        with self.lock:
-            return self._chart_refresh_payload()
-
-    def set_chart_refresh_interval(self, interval: float) -> dict[str, Any]:
-        with self.lock:
-            self.chart_refresh_interval = self._normalize_chart_refresh_interval(interval)
-            self.config["chart_refresh_interval"] = self.chart_refresh_interval
-            return self._chart_refresh_payload()
-
     def reset(self) -> dict[str, Any]:
         with self.lock:
             if self.seed is not None:
                 random.seed(self.seed)
             self.engine.reset()
             self.started_at = time.time()
-            self._last_chart_recorded_at = time.monotonic()
             self.agents = self._create_agents()
             for agent in self.agents:
                 agent.attach(self.engine)
             self.running = True
             return self.snapshot()
+
+    def configure(self, *, scenario: str | None = None, seed: int | None = None) -> dict[str, Any]:
+        with self.lock:
+            if scenario is None:
+                scenario = str(self.config.get("scenario", "default"))
+            self.seed = seed
+            if self.seed is not None:
+                random.seed(self.seed)
+            self._regime_config = build_config(scenario=scenario, config_path=self.config_path)
+            self.config = deepcopy(self._regime_config)
+            self.chaos_level = 50.0
+            self.chaos_source = "regime baseline"
+            self.chaos_updated_at = time.time()
+            self.engine = MatchingEngine(symbol=self.engine.symbol, start_price=self.engine.start_price, config=self.config)
+            self.started_at = time.time()
+            self.agents = self._create_agents()
+            for agent in self.agents:
+                agent.attach(self.engine)
+            self.running = True
+            return self.snapshot()
+
+    def set_chaos(
+        self,
+        level: float,
+        *,
+        source: str = "manual",
+        shock: float | None = None,
+    ) -> dict[str, Any]:
+        with self.lock:
+            level = float(level)
+            if not 0 <= level <= 100:
+                raise ValueError("chaos level must be between 0 and 100")
+
+            normalized = level / 100
+            base = self._regime_config
+            updates = {
+                "fundamental_volatility": self._chaos_scale(base, "fundamental_volatility", normalized, 0.35, 2.4),
+                "max_realized_volatility": self._chaos_scale(base, "max_realized_volatility", normalized, 0.5, 1.8),
+                "news_probability": min(0.25, self._chaos_scale(base, "news_probability", normalized, 0.2, 2.5)),
+                "news_min": self._chaos_scale(base, "news_min", normalized, 0.55, 1.8),
+                "news_max": self._chaos_scale(base, "news_max", normalized, 0.55, 1.8),
+                "order_flow_price_impact": self._chaos_scale(base, "order_flow_price_impact", normalized, 0.5, 1.9),
+                "liquidity_probability": min(0.95, self._chaos_scale(base, "liquidity_probability", normalized, 1.35, 0.45)),
+                "depth_scale": self._chaos_scale(base, "depth_scale", normalized, 1.5, 0.42),
+                "spread_scale": self._chaos_scale(base, "spread_scale", normalized, 0.65, 2.1),
+                "order_cancel_probability": min(
+                    0.25,
+                    self._chaos_scale(base, "order_cancel_probability", normalized, 0.35, 2.2),
+                ),
+                "queue_decay_strength": self._chaos_scale(base, "queue_decay_strength", normalized, 0.6, 1.8),
+                "liquidity_resilience": self._chaos_scale(base, "liquidity_resilience", normalized, 1.5, 0.45),
+                "latent_liquidity_depth": self._chaos_scale(base, "latent_liquidity_depth", normalized, 1.5, 0.45),
+                "volatility_clustering": max(
+                    0.35,
+                    min(0.97, float(base.get("volatility_clustering", 0.65)) + (normalized - 0.5) * 0.24),
+                ),
+            }
+            self.config.update(updates)
+            self.engine.config.update(updates)
+            self.chaos_level = level
+            self.chaos_source = str(source or "manual")[:80]
+            self.chaos_updated_at = time.time()
+            if shock is not None and abs(float(shock)) > 0:
+                self.engine.inject_external_shock(float(shock), source=self.chaos_source)
+            return self.snapshot()
+
+    def chaos_status(self) -> dict[str, Any]:
+        with self.lock:
+            return {
+                "level": round(self.chaos_level, 2),
+                "profile": self._chaos_profile(self.chaos_level),
+                "source": self.chaos_source,
+                "updated_at": self.chaos_updated_at,
+            }
 
     def clear_api_users(self) -> dict[str, Any]:
         with self.lock:
@@ -478,13 +542,12 @@ class MarketSimulator:
                 {
                     "running": self.running,
                     "tick_interval": self.tick_interval,
-                    "chart_refresh_interval": self.chart_refresh_interval,
-                    "chart_refresh_ms": int(self.chart_refresh_interval * 1000),
                     "last_loop_sleep": round(self.last_loop_sleep, 4),
                     "uptime_seconds": round(time.time() - self.started_at, 2),
                     "agent_counts": counts,
                     "scenario": self.config.get("scenario", "default"),
                     "seed": self.seed,
+                    "chaos": self.chaos_status(),
                     "risk_limits": {
                         "max_order_quantity": self.config.get("max_order_quantity"),
                         "max_position_abs": self.config.get("max_position_abs"),
@@ -494,6 +557,33 @@ class MarketSimulator:
                 }
             )
             return state
+
+    @staticmethod
+    def _chaos_scale(
+        config: dict[str, Any],
+        key: str,
+        normalized: float,
+        low_factor: float,
+        high_factor: float,
+    ) -> float:
+        base = float(config.get(key, 0.0))
+        if normalized <= 0.5:
+            factor = low_factor + (1 - low_factor) * (normalized / 0.5)
+        else:
+            factor = 1 + (high_factor - 1) * ((normalized - 0.5) / 0.5)
+        return base * factor
+
+    @staticmethod
+    def _chaos_profile(level: float) -> str:
+        if level < 25:
+            return "quiet"
+        if level < 50:
+            return "controlled"
+        if level < 70:
+            return "active"
+        if level < 88:
+            return "stressed"
+        return "extreme"
 
     def stop(self) -> None:
         self._stop.set()
@@ -525,28 +615,7 @@ class MarketSimulator:
                     account.extra["last_error"] = str(exc)
             finally:
                 agent.schedule_next(self.engine.tick)
-        self._record_chart_history_if_due()
-
-    def _record_chart_history_if_due(self) -> None:
-        now = time.monotonic()
-        if now - self._last_chart_recorded_at >= self.chart_refresh_interval:
-            self.engine.record_history()
-            self._last_chart_recorded_at = now
-
-    def _chart_refresh_payload(self) -> dict[str, Any]:
-        return {
-            "chart_refresh_interval": self.chart_refresh_interval,
-            "chart_refresh_ms": int(self.chart_refresh_interval * 1000),
-            "min_chart_refresh_interval": self.MIN_CHART_REFRESH_INTERVAL,
-            "max_chart_refresh_interval": self.MAX_CHART_REFRESH_INTERVAL,
-            "tick_interval": self.tick_interval,
-        }
-
-    def _normalize_chart_refresh_interval(self, interval: float) -> float:
-        value = float(interval)
-        if not math.isfinite(value):
-            raise ValueError("chart_refresh_interval must be a finite number")
-        return round(max(self.MIN_CHART_REFRESH_INTERVAL, min(value, self.MAX_CHART_REFRESH_INTERVAL)), 3)
+        self.engine.record_history()
 
     def _create_agents(self) -> list[BaseAgent]:
         agents: list[BaseAgent] = []
